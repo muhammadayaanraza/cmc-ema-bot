@@ -487,9 +487,9 @@ async def run_bot():
 if __name__ == "__main__":
     # ── Config check ─────────────────────────────────────────────────────────
     errors = []
-    if "APNA" in BOT_TOKEN  : errors.append("BOT_TOKEN set nahi kiya!")
-    if "APNA" in CHAT_ID    : errors.append("CHAT_ID set nahi kiya!")
-    if "APNA" in CMC_API_KEY: errors.append("CMC_API_KEY set nahi kiya!")
+    if not BOT_TOKEN or "APNA" in BOT_TOKEN: errors.append("BOT_TOKEN set nahi kiya!")
+    if not CHAT_ID or "APNA" in CHAT_ID: errors.append("CHAT_ID set nahi kiya!")
+    if not CMC_API_KEY or "APNA" in CMC_API_KEY: errors.append("CMC_API_KEY set nahi kiya!")
 
     if errors:
         print("\n" + "─"*50)
