@@ -21,14 +21,14 @@ EMA_FAST = 9
 EMA_SLOW = 50
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("PureFuturesBot")
+log = logging.getLogger("PureFuturesFixedBot")
 
 # ==========================================================
-# 1. FETCH ALL FUTURES COINS FROM BINANCE
+# 1. FETCH ALL FUTURES COINS DIRECTLY FROM BINANCE
 # ==========================================================
 def get_futures_tickers():
     try:
-        log.info("Fetching active futures symbols...")
+        log.info("Fetching active futures symbols directly...")
         url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
         r = requests.get(url, timeout=10)
         
@@ -36,26 +36,28 @@ def get_futures_tickers():
         if r.status_code == 200:
             data = r.json()
             for market in data.get("symbols", []):
+                # Sirf USDT pairs aur TRADING status waale coins active futures hain
                 if market.get("quoteAsset") == "USDT" and market.get("status") == "TRADING":
-                    symbol = market.get("symbol") # E.g., "BTCUSDT"
-                    base = market.get("baseAsset")
-                    if base not in ["USDT", "USDC", "DAI", "BUSD"]:
+                    symbol = market.get("symbol")  # E.g., "BTCUSDT"
+                    if symbol and not any(x in symbol for x in ["USDCUSDT", "BUSDUSDT", "EURUSDT"]):
                         tickers.append(symbol)
                         
         if not tickers:
             return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
             
-        return list(dict.fromkeys(tickers))
+        # Clean duplicates just in case
+        final_list = list(dict.fromkeys(tickers))
+        log.info(f"Loaded {len(final_list)} pure futures pairs.")
+        return final_list
     except Exception as e:
         log.error(f"Error fetching tickers: {e}")
-        return ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+        return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
 
 # ==========================================================
-# 2. FETCH OHLCV DIRECTLY FROM BINANCE FUTURES (BULLETPROOF)
+# 2. FETCH OHLCV DIRECTLY FROM BINANCE FUTURES API
 # ==========================================================
 def fetch_futures_ohlcv(symbol):
     try:
-        # 15m timeframe ke liye Binance Futures API se 100 candles mangwana
         url = "https://fapi.binance.com/fapi/v1/klines"
         params = {"symbol": symbol, "interval": "15m", "limit": "100"}
         
@@ -67,13 +69,11 @@ def fetch_futures_ohlcv(symbol):
         if not data or len(data) < EMA_SLOW:
             return None
             
-        # Standard DataFrame banana
         df = pd.DataFrame(data, columns=[
             "ts", "open", "high", "low", "close", "volume", 
             "close_time", "asset_volume", "trades", "taker_buy_base", "taker_buy_quote", "ignore"
         ])
         
-        # Numbers ko float mein convert karna
         df["open"] = df["open"].astype(float)
         df["high"] = df["high"].astype(float)
         df["low"] = df["low"].astype(float)
@@ -109,7 +109,6 @@ def detect_signal_details(df):
     current_above = ema9.iloc[-1] > ema50.iloc[-1]
     previous_above = ema9.iloc[-2] > ema50.iloc[-2]
 
-    # Crossover Code
     if current_above == previous_above:
         return None
 
@@ -169,8 +168,8 @@ def build_message(symbol, signal):
         f"📈 **Direction:** {emoji} {signal['type']}\n"
         f"⏱ **Timeframe:** 15 Minute\n\n"
         f"📥 **Entry Price:** {fmt(signal['entry'])}\n"
-        f"🎯 **Take Profit 1:** {fmt(signal['tp1'])}\n"
-        f"🎯 **Take Profit 2:** {fmt(signal['tp2'])}\n"
+        f"🎯 **Take Profit 1:** {fmt(fmt(signal['tp1']))}\n"
+        f"🎯 **Take Profit 2:** {fmt(fmt(signal['tp2']))}\n"
         f"🛑 **Stop Loss:** {fmt(signal['sl'])}\n\n"
         f"📊 **Filters:**\n"
         f"✅ RSI (14) Confirmed: {signal['rsi']:.1f}\n\n"
@@ -194,12 +193,13 @@ async def run_bot():
             log.error(f"Telegram connection error: {e}")
 
         while True:
+            # Load active futures pairs directly from list
             pairs_list = get_futures_tickers()
 
             try:
                 await bot.send_message(
                     chat_id=CHAT_ID,
-                    text=f"🔄 Full Futures Market Loaded!\n🔍 Scanning {len(pairs_list)} Coins via Native Backend...",
+                    text=f"🔄 Full Futures Market Synchronized!\n🔍 Scanning {len(pairs_list)} Coins via Native Backend...",
                 )
             except:
                 pass
@@ -228,15 +228,15 @@ async def run_bot():
                     except Exception as e:
                         log.error(f"Telegram send fail: {e}")
 
-                # Chota delay taaki smooth scanning ho
+                # Rate limiting delay
                 await asyncio.sleep(0.05)
 
             summary = (
                 f"📡 **Scan Complete**\n\n"
-                f"🔍 Total Scanned: {scanned} coins\n"
+                f"🔍 Total Scanned: {scanned} Real Coins\n"
                 f"✅ Safe Signals Found: {found}\n"
-                f"⏭ Skipped/Invalid: {skipped}\n"
-                f"⏱ Next massive scan in 15 minutes"
+                f"⏭ Skipped: {skipped}\n"
+                f"⏱ Next loop in 15 minutes"
             )
             try:
                 await bot.send_message(chat_id=CHAT_ID, text=summary, parse_mode="Markdown")
