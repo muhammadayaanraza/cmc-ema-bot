@@ -22,48 +22,41 @@ EMA_FAST = 9
 EMA_SLOW = 50
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("GlobalCryptoBot")
+log = logging.getLogger("BinanceWeexFuturesBot")
 
 # =========================================================================
-# FETCH TOP 500 COINS DYNAMICALLY FROM COINGECKO (BULLETPROOF LIST)
+# FETCH ALL ACTIVE FUTURES COINS FROM BINANCE (PURE TRADING PAIRS)
 # =========================================================================
-def get_global_futures_tickers():
+def get_binance_futures_tickers():
     try:
-        log.info("Fetching Top 500 Coins from CoinGecko directory...")
-        # Page 1 aur Page 2 se 250-250 coins uthayenge = Total 500
+        log.info("Fetching pure Futures coins from Binance API...")
+        url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+        
+        r = requests.get(url, timeout=15)
         tickers = []
         
-        for page in [1, 2]:
-            url = f"https://api.coingecko.com/api/v3/coins/markets"
-            params = {
-                "vs_currency": "usd",
-                "order": "market_cap_desc",
-                "per_page": "250",
-                "page": str(page),
-                "sparkline": "false"
-            }
-            r = requests.get(url, params=params, timeout=15)
-            if r.status_code == 200:
-                data = r.json()
-                for coin in data:
-                    sym = coin.get("symbol", "").upper()
-                    # Stablecoins aur fiat pairs ko filter out karna
-                    if sym and sym not in ["USDT", "USDC", "FDUSD", "DAI", "EUR", "GBP", "BUSD", "PYUSD", "WBTC", "STETH"]:
-                        tickers.append(sym)
-            time.sleep(0.2) # Safe bypass
-            
+        if r.status_code == 200:
+            data = r.json()
+            for market in data.get("symbols", []):
+                # Sirf USDS-M Perpetual (USDT pairs) aur TRADING status waale coins uthana
+                if market.get("quoteAsset") == "USDT" and market.get("status") == "TRADING":
+                    base_coin = market.get("baseAsset", "")
+                    # Fuzool stablecoins nikal dena
+                    if base_coin and base_coin not in ["USDT", "USDC", "DAI", "BUSD", "EUR"]:
+                        tickers.append(base_coin)
+                        
         if not tickers:
-            return ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "DOT", "LINK"]
+            return ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX"]
             
         clean_list = list(dict.fromkeys(tickers))
-        log.info(f"Successfully loaded {len(clean_list)} coins for scanning.")
+        log.info(f"Successfully loaded {len(clean_list)} pure Futures coins.")
         return clean_list
     except Exception as e:
-        log.error(f"Error fetching from CoinGecko: {e}")
+        log.error(f"Error fetching from Binance Futures API: {e}")
         return ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "SUI", "APT", "PEPE", "WIF"]
 
 # ==========================================
-# FETCH OHLCV (YAHOO FINANCE)
+# FETCH OHLCV (YAHOO FINANCE - NO BLOCK)
 # ==========================================
 def fetch_ohlcv(symbol):
     pair = f"{symbol}-USD"
@@ -142,7 +135,7 @@ def detect_signal_details(df):
     entry_price = float(close.iloc[-1])
     current_rsi = float(rsi_series.iloc[-1])
 
-    # RSI Filters
+    # RSI Strategy Filters (Fake Breakout Protection)
     if signal_type == "LONG":
         if not (50.0 <= current_rsi <= 70.0):
             return None
@@ -150,7 +143,7 @@ def detect_signal_details(df):
         if not (30.0 <= current_rsi <= 50.0):
             return None
 
-    # Risk Management
+    # Risk Management (Stop loss and Target settings)
     last_few_candles = df.tail(4)
     if signal_type == "LONG":
         stop_loss = float(last_few_candles["low"].min()) * 0.996
@@ -188,15 +181,15 @@ def build_message(symbol, signal):
     emoji = "🟢" if signal["type"] == "LONG" else "🔴"
     
     return (
-        f"🚨 **CONFIRMED FUTURES SIGNAL (9/50 EMA)** 🚨\n\n"
-        f"🪙 **Coin:** #{symbol}/USDT\n"
+        f"🚨 **CONFIRMED WEEX FUTURES SIGNAL** 🚨\n\n"
+        f"🪙 **Coin:** #{symbol}/USDT (Futures)\n"
         f"📈 **Direction:** {emoji} {signal['type']}\n"
         f"⏱ **Timeframe:** 15 Minute\n\n"
         f"📥 **Entry Price:** {fmt(signal['entry'])}\n"
         f"🎯 **Take Profit 1:** {fmt(signal['tp1'])}\n"
         f"🎯 **Take Profit 2:** {fmt(signal['tp2'])}\n"
         f"🛑 **Stop Loss:** {fmt(signal['sl'])}\n\n"
-        f"📊 **Filters:**\n"
+        f"📊 **Filters Status:**\n"
         f"✅ RSI (14) Confirmed: {signal['rsi']:.1f}\n\n"
         f"🕒 _Generated at: {now}_"
     )
@@ -212,18 +205,19 @@ async def run_bot():
         try:
             await bot.send_message(
                 chat_id=CHAT_ID,
-                text="🤖 WEEX Global Multi-Coin Bot Online!\n⚡ 9/50 EMA Strategy with strict RSI filters running.",
+                text="🤖 WEEX Verified Futures Bot Online!\n⚡ Monitoring 300+ pure Futures coins with 9/50 EMA + RSI Filters.",
             )
         except Exception as e:
             log.error(f"Telegram start message failed: {e}")
 
         while True:
-            pairs_list = get_global_futures_tickers()
+            # Load active futures pairs from Binance source
+            pairs_list = get_binance_futures_tickers()
 
             try:
                 await bot.send_message(
                     chat_id=CHAT_ID,
-                    text=f"📊 Market List Loaded!\n🔍 Scanning {len(pairs_list)} High-Volume Coins (15m)...",
+                    text=f"📊 Futures Tickers Synchronized!\n🔍 Scanning {len(pairs_list)} High-Volume Trading Pairs (15m)...",
                 )
             except:
                 pass
@@ -252,15 +246,15 @@ async def run_bot():
                     except Exception as e:
                         log.error(f"Telegram signal delivery error: {e}")
 
-                # Rate limiting sleep
+                # Safe rate limiting delay
                 await asyncio.sleep(0.2)
 
             summary = (
                 f"📡 **Scan Complete**\n\n"
-                f"🔍 Total Scanned: {scanned} coins\n"
-                f"✅ Verified RSI/EMA Signals: {found}\n"
-                f"⏭ Skipped/Low Volume: {skipped}\n"
-                f"⏱ Next massive scan in 15 minutes"
+                f"🔍 Total Scanned: {scanned} Real Coins\n"
+                f"✅ Safe Signals Delivered: {found}\n"
+                f"⏭ Skipped: {skipped}\n"
+                f"⏱ Next loop in 15 minutes"
             )
             try:
                 await bot.send_message(chat_id=CHAT_ID, text=summary, parse_mode="Markdown")
