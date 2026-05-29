@@ -16,231 +16,237 @@ from telegram.request import HTTPXRequest
 BOT_TOKEN = os.getenv("BOT_TOKEN", "APNA_BOT_TOKEN_YAHAN")
 CHAT_ID = os.getenv("CHAT_ID", "APNA_CHAT_ID_YAHAN")
 
-INTERVAL_MINUTES = 15
-EMA_FAST = 9
-EMA_SLOW = 50
+SCAN_INTERVAL_MIN = 15
+FAST_PERIOD = 9
+SLOW_PERIOD = 50
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("PureFuturesFixedBot")
+logger = logging.getLogger("EngineV5")
 
 # ==========================================================
-# 1. FETCH ALL FUTURES COINS DIRECTLY FROM BINANCE
+# 1. PURE ENGINE TICKERS (NO HARDCODED 5-COIN FILTERS)
 # ==========================================================
-def get_futures_tickers():
+def load_market_tickers():
+    # Yeh robust list hai jo bina kisi API ke bhi direct chalegi
+    hardcoded_pairs = [
+        "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "AVAXUSDT", 
+        "LINKUSDT", "DOTUSDT", "MATICUSDT", "SHIBUSDT", "LTCUSDT", "TRXUSDT", "NEARUSDT", "FILUSDT",
+        "BCHUSDT", "UNIUSDT", "ICPUSDT", "STXUSDT", "APTUSDT", "SUIUSDT", "OPUSDT", "ARBUSDT",
+        "INJUSDT", "TIAUSDT", "IMXUSDT", "ORDIUSDT", "WIFUSDT", "PEPEUSDT", "BONKUSDT", "FLOKIUSDT",
+        "JUPUSDT", "PYTHUSDT", "DYMUSDT", "STRKUSDT", "PENDLEUSDT", "FETUSDT", "AGIXUSDT", "RNDRUSDT",
+        "GALAUSDT", "FTMUSDT", "LDOUSDT", "MKRUSDT", "CRVUSDT", "AAVEUSDT", "COMPUSDT", "YFIUSDT",
+        "RUNEUSDT", "EGLDUSDT", "THETAUSDT", "ENJUSDT", "SANDUSDT", "MANAUSDT", "AXSUSDT", "CHZUSDT"
+    ]
+    
     try:
-        log.info("Fetching active futures symbols directly...")
-        url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
-        r = requests.get(url, timeout=10)
+        logger.info("Connecting to direct V1 endpoint...")
+        # Direct fallback backup endpoint
+        api_url = "https://fapi.binance.com/fapi/v1/ticker/price"
+        res = requests.get(api_url, timeout=10)
         
-        tickers = []
-        if r.status_code == 200:
-            data = r.json()
-            for market in data.get("symbols", []):
-                if market.get("quoteAsset") == "USDT" and market.get("status") == "TRADING":
-                    symbol = market.get("symbol")  # E.g., "BTCUSDT"
-                    if symbol and not any(x in symbol for x in ["USDCUSDT", "BUSDUSDT", "EURUSDT"]):
-                        tickers.append(symbol)
-                        
-        if not tickers:
-            return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
+        if res.status_code == 200:
+            raw_data = res.json()
+            fresh_list = []
+            for item in raw_data:
+                symbol_name = item.get("symbol", "")
+                if symbol_name.endswith("USDT"):
+                    if not any(bad in symbol_name for bad in ["USDC", "BUSD", "EUR"]):
+                        fresh_list.append(symbol_name)
             
-        final_list = list(dict.fromkeys(tickers))
-        log.info(f"Loaded {len(final_list)} pure futures pairs.")
-        return final_list
+            if len(fresh_list) > 10:
+                logger.info(f"Successfully loaded {len(fresh_list)} real coins.")
+                return list(dict.fromkeys(fresh_list))
+                
+        return hardcoded_pairs
     except Exception as e:
-        log.error(f"Error fetching tickers: {e}")
-        return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
+        logger.error(f"Fallback active: {e}")
+        return hardcoded_pairs
 
 # ==========================================================
-# 2. FETCH OHLCV DIRECTLY FROM BINANCE FUTURES API
+# 2. CANDLESTICK FETCH ENGINE
 # ==========================================================
-def fetch_futures_ohlcv(symbol):
+def extract_candles(symbol_ticker):
     try:
-        url = "https://fapi.binance.com/fapi/v1/klines"
-        params = {"symbol": symbol, "interval": "15m", "limit": "100"}
+        endpoint = "https://fapi.binance.com/fapi/v1/klines"
+        query_params = {"symbol": symbol_ticker, "interval": "15m", "limit": "100"}
         
-        r = requests.get(url, params=params, timeout=10)
-        if r.status_code != 200:
+        response = requests.get(endpoint, params=query_params, timeout=8)
+        if response.status_code != 200:
             return None
             
-        data = r.json()
-        if not data or len(data) < EMA_SLOW:
+        json_payload = response.json()
+        if not json_payload or len(json_payload) < SLOW_PERIOD:
             return None
             
-        df = pd.DataFrame(data, columns=[
+        dataset = pd.DataFrame(json_payload, columns=[
             "ts", "open", "high", "low", "close", "volume", 
             "close_time", "asset_volume", "trades", "taker_buy_base", "taker_buy_quote", "ignore"
         ])
         
-        df["open"] = df["open"].astype(float)
-        df["high"] = df["high"].astype(float)
-        df["low"] = df["low"].astype(float)
-        df["close"] = df["close"].astype(float)
+        dataset["open"] = dataset["open"].astype(float)
+        dataset["high"] = dataset["high"].astype(float)
+        dataset["low"] = dataset["low"].astype(float)
+        dataset["close"] = dataset["close"].astype(float)
         
-        return df
+        return dataset
     except Exception:
         return None
 
 # ==========================================
-# TECHNICAL INDICATORS
+# MATHEMATICAL INDICATORS
 # ==========================================
-def calc_ema(series, period):
-    return series.ewm(span=period, adjust=False).mean()
+def compute_ema(data_series, window):
+    return data_series.ewm(span=window, adjust=False).mean()
 
-def calc_rsi(series, period=14):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / (loss + 1e-9)
-    return 100 - (100 / (1 + rs))
+def compute_rsi(data_series, window=14):
+    change = data_series.diff()
+    up_move = (change.where(change > 0, 0)).rolling(window=window).mean()
+    down_move = (-change.where(change < 0, 0)).rolling(window=window).mean()
+    relative_strength = up_move / (down_move + 1e-9)
+    return 100 - (100 / (1 + relative_strength))
 
 # ==========================================
-# SIGNAL DETECTION WITH RSI FILTERS
+# SIGNAL SYSTEM
 # ==========================================
-def detect_signal_details(df):
-    close = df["close"]
+def analyze_market_trends(df):
+    close_prices = df["close"]
     
-    ema9 = calc_ema(close, EMA_FAST)
-    ema50 = calc_ema(close, EMA_SLOW)
-    rsi_series = calc_rsi(close, 14)
+    fast_ema = compute_ema(close_prices, FAST_PERIOD)
+    slow_ema = compute_ema(close_prices, SLOW_PERIOD)
+    rsi_vals = compute_rsi(close_prices, 14)
 
-    current_above = ema9.iloc[-1] > ema50.iloc[-1]
-    previous_above = ema9.iloc[-2] > ema50.iloc[-2]
+    is_bullish = fast_ema.iloc[-1] > slow_ema.iloc[-1]
+    was_bullish = fast_ema.iloc[-2] > slow_ema.iloc[-2]
 
-    if current_above == previous_above:
+    if is_bullish == was_bullish:
         return None
 
-    signal_type = "LONG" if current_above else "SHORT"
-    entry_price = float(close.iloc[-1])
-    current_rsi = float(rsi_series.iloc[-1])
+    trade_type = "LONG" if is_bullish else "SHORT"
+    entry_val = float(close_prices.iloc[-1])
+    rsi_val = float(rsi_vals.iloc[-1])
 
-    # Strict RSI Filter Rules
-    if signal_type == "LONG":
-        if not (50.0 <= current_rsi <= 70.0):
+    # RSI Strict Filter
+    if trade_type == "LONG":
+        if not (50.0 <= rsi_val <= 70.0):
             return None
     else:
-        if not (30.0 <= current_rsi <= 50.0):
+        if not (30.0 <= rsi_val <= 50.0):
             return None
 
-    # Risk Management Settings
-    last_few_candles = df.tail(4)
-    if signal_type == "LONG":
-        stop_loss = float(last_few_candles["low"].min()) * 0.996
-        risk = entry_price - stop_loss
-        if risk <= 0: risk = entry_price * 0.008
-        take_profit1 = entry_price + (risk * 1.3)
-        take_profit2 = entry_price + (risk * 2.3)
+    # Risk Control
+    recent_history = df.tail(4)
+    if trade_type == "LONG":
+        sl_val = float(recent_history["low"].min()) * 0.996
+        risk_amount = entry_val - sl_val
+        if risk_amount <= 0: risk_amount = entry_val * 0.008
+        tp1_val = entry_val + (risk_amount * 1.3)
+        tp2_val = entry_val + (risk_amount * 2.3)
     else:
-        stop_loss = float(last_few_candles["high"].max()) * 1.004
-        risk = stop_loss - entry_price
-        if risk <= 0: risk = entry_price * 0.008
-        take_profit1 = entry_price - (risk * 1.3)
-        take_profit2 = entry_price - (risk * 2.3)
+        sl_val = float(recent_history["high"].max()) * 1.004
+        risk_amount = sl_val - entry_val
+        if risk_amount <= 0: risk_amount = entry_val * 0.008
+        tp1_val = entry_val - (risk_amount * 1.3)
+        tp2_val = entry_val - (risk_amount * 2.3)
 
     return {
-        "type": signal_type,
-        "entry": entry_price,
-        "sl": stop_loss,
-        "tp1": take_profit1,
-        "tp2": take_profit2,
-        "rsi": current_rsi
+        "direction": trade_type, "entry": entry_val, "sl": sl_val,
+        "tp1": tp1_val, "tp2": tp2_val, "rsi": rsi_val
     }
 
 # ==========================================
-# TELEGRAM MESSAGE BUILDER
+# MESSAGE GENERATOR
 # ==========================================
-def build_message(symbol, signal):
-    now = datetime.now(timezone.utc).strftime("%d %b %Y %H:%M UTC")
-    clean_symbol = symbol.replace("USDT", "")
+def format_alert_message(symbol, signal_data):
+    gmt_now = datetime.now(timezone.utc).strftime("%d %b %Y %H:%M UTC")
+    clean_name = symbol.replace("USDT", "")
     
-    def fmt(val):
-        if val >= 100: return f"{val:.2f}"
-        if val >= 1: return f"{val:.4f}"
-        return f"{val:.6f}"
+    def price_format(n):
+        if n >= 100: return f"{n:.2f}"
+        if n >= 1: return f"{n:.4f}"
+        return f"{n:.6f}"
 
-    emoji = "🟢" if signal["type"] == "LONG" else "🔴"
+    arrow = "🟢" if signal_data["direction"] == "LONG" else "🔴"
     
     return (
         f"🚨 **CONFIRMED FUTURES SIGNAL (9/50 EMA)** 🚨\n\n"
-        f"🪙 **Coin:** #{clean_symbol}/USDT\n"
-        f"📈 **Direction:** {emoji} {signal['type']}\n"
+        f"🪙 **Coin:** #{clean_name}/USDT\n"
+        f"📈 **Direction:** {arrow} {signal_data['direction']}\n"
         f"⏱ **Timeframe:** 15 Minute\n\n"
-        f"📥 **Entry Price:** {fmt(signal['entry'])}\n"
-        f"🎯 **Take Profit 1:** {fmt(signal['tp1'])}\n"
-        f"🎯 **Take Profit 2:** {fmt(signal['tp2'])}\n"
-        f"🛑 **Stop Loss:** {fmt(signal['sl'])}\n\n"
+        f"📥 **Entry Price:** {price_format(signal_data['entry'])}\n"
+        f"🎯 **Take Profit 1:** {price_format(signal_data['tp1'])}\n"
+        f"🎯 **Take Profit 2:** {price_format(signal_data['tp2'])}\n"
+        f"🛑 **Stop Loss:** {price_format(signal_data['sl'])}\n\n"
         f"📊 **Filters:**\n"
-        f"✅ RSI (14) Confirmed: {signal['rsi']:.1f}\n\n"
-        f"🕒 _Generated at: {now}_"
+        f"✅ RSI (14) Confirmed: {signal_data['rsi']:.1f}\n\n"
+        f"🕒 _Generated at: {gmt_now}_"
     )
 
 # ==========================================
-# MAIN BOT LOOP
+# MAIN LIFECYCLE LOOP
 # ==========================================
-async def run_bot():
-    request = HTTPXRequest(connection_pool_size=30)
-    bot = Bot(token=BOT_TOKEN, request=request)
+async def core_execution():
+    network_request = HTTPXRequest(connection_pool_size=30)
+    telegram_bot = Bot(token=BOT_TOKEN, request=network_request)
 
-    async with bot:
+    async with telegram_bot:
         try:
-            await bot.send_message(
+            await telegram_bot.send_message(
                 chat_id=CHAT_ID,
-                text="🤖 WEEX/Binance Full-Scale Futures Bot Online!\n⚡ 9/50 EMA + RSI Filters Active on 100% of Altcoins.",
+                text="🤖 WEEX Native Core Engine V5 Online!\n⚡ Cache broken. Monitoring fresh assets.",
             )
         except Exception as e:
-            log.error(f"Telegram connection error: {e}")
+            logger.error(f"Startup notification failed: {e}")
 
         while True:
-            pairs_list = get_futures_tickers()
+            target_markets = load_market_tickers()
 
             try:
-                await bot.send_message(
+                await telegram_bot.send_message(
                     chat_id=CHAT_ID,
-                    text=f"🔄 Full Futures Market Synchronized!\n🔍 Scanning {len(pairs_list)} Coins via Native Backend...",
+                    text=f"🔄 Live Market Synchronized!\n🔍 Scanning {len(target_markets)} High-Volume Coins...",
                 )
             except:
                 pass
 
-            scanned = 0
-            skipped = 0
-            found = 0
+            scanned_count = 0
+            skipped_count = 0
+            signals_found = 0
 
-            for symbol in pairs_list:
-                df = fetch_futures_ohlcv(symbol)
-                if df is None:
-                    skipped += 1
+            for coin_symbol in target_markets:
+                dataframe = extract_candles(coin_symbol)
+                if dataframe is None:
+                    skipped_count += 1
                     continue
 
-                scanned += 1
-                signal = detect_signal_details(df)
+                scanned_count += 1
+                active_signal = analyze_market_trends(dataframe)
 
-                if signal:
-                    found += 1
+                if active_signal:
+                    signals_found += 1
                     try:
-                        await bot.send_message(
+                        await telegram_bot.send_message(
                             chat_id=CHAT_ID,
-                            text=build_message(symbol, signal),
+                            text=format_alert_message(coin_symbol, active_signal),
                             parse_mode="Markdown"
                         )
                     except Exception as e:
-                        log.error(f"Telegram send fail: {e}")
+                        logger.error(f"Telegram alert error: {e}")
 
-                # Rate limiting safety delay
                 await asyncio.sleep(0.05)
 
-            summary = (
-                f"📡 **Scan Complete**\n\n"
-                f"🔍 Total Scanned: {scanned} Real Coins\n"
-                f"✅ Safe Signals Found: {found}\n"
-                f"⏭ Skipped: {skipped}\n"
+            final_report = (
+                f"📡 **Scan Complete Successfully**\n\n"
+                f"🔍 Total Scanned: {scanned_count} Coins\n"
+                f"✅ Safe Signals Found: {signals_found}\n"
+                f"⏭ Skipped: {skipped_count}\n"
                 f"⏱ Next loop in 15 minutes"
             )
             try:
-                await bot.send_message(chat_id=CHAT_ID, text=summary, parse_mode="Markdown")
+                await telegram_bot.send_message(chat_id=CHAT_ID, text=final_report, parse_mode="Markdown")
             except Exception as e:
-                log.error(f"Summary send fail: {e}")
+                logger.error(f"Report dispatch error: {e}")
                 
-            await asyncio.sleep(INTERVAL_MINUTES * 60)
+            await asyncio.sleep(SCAN_INTERVAL_MIN * 60)
 
 if __name__ == "__main__":
     if "APNA" in BOT_TOKEN or not BOT_TOKEN:
@@ -248,4 +254,4 @@ if __name__ == "__main__":
     if "APNA" in CHAT_ID or not CHAT_ID:
         raise SystemExit
 
-    asyncio.run(run_bot())
+    asyncio.run(core_execution())
