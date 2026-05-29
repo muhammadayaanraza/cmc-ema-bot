@@ -23,6 +23,13 @@ CANDLE_LIMIT = 250
 
 BYBIT_BASE = "https://api.bytick.com"
 
+# Railway bypass karne ke liye generic browser headers
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+}
+
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("EMABot")
 
@@ -34,8 +41,14 @@ def get_bybit_pairs():
         r = requests.get(
             f"{BYBIT_BASE}/v5/market/instruments-info",
             params={"category": "linear", "limit": 1000},
+            headers=HEADERS,
             timeout=20,
         )
+        
+        if r.status_code != 200:
+            log.error(f"Bybit IP Blocked or Server Error. Status Code: {r.status_code}")
+            return []
+
         data = r.json()
 
         if data.get("retCode") != 0:
@@ -71,8 +84,13 @@ def fetch_ohlcv(symbol):
                 "interval": "15",
                 "limit": str(CANDLE_LIMIT),
             },
+            headers=HEADERS,
             timeout=20,
         )
+        
+        if r.status_code != 200:
+            return None
+
         data = r.json()
 
         if data.get("retCode") != 0:
