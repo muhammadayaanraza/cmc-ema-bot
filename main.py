@@ -33,40 +33,15 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("EMABot")
 
 # ==========================================
-# GET LIVE BYBIT USDT PAIRS
+# MANUAL COINS LIST (BYBIT BLOCK BYPASS)
 # ==========================================
-def get_bybit_pairs():
-    try:
-        r = requests.get(
-            f"{BYBIT_BASE}/v5/market/instruments-info",
-            params={"category": "linear", "limit": 1000},
-            headers=HEADERS,
-            timeout=20,
-        )
-        
-        if r.status_code != 200:
-            log.error(f"Bybit Server Error. Status Code: {r.status_code}")
-            return []
-
-        data = r.json()
-
-        if data.get("retCode") != 0:
-            log.error(f"Bybit pair fetch failed: {data}")
-            return []
-
-        pairs = []
-        for item in data.get("result", {}).get("list", []):
-            symbol = item.get("symbol")
-            if symbol and symbol.endswith("USDT"):
-                # "USDT" hata kar sirf coin ka naam rakh rahe hain (jaise BTC)
-                pairs.append(symbol.replace("USDT", ""))
-
-        log.info(f"Loaded {len(pairs)} Bybit pairs")
-        return pairs
-
-    except Exception as e:
-        log.error(f"Pair fetch error: {e}")
-        return []
+# Agar Bybit API block bhi ho jaye, bot yahan se coins utha kar smoothly scan karega
+MANUAL_PAIRS = [
+    "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "DOT", "MATIC",
+    "LINK", "UNI", "LTC", "ATOM", "TRX", "BCH", "NEAR", "FIL", "APT", "ARB",
+    "OP", "INJ", "SUI", "TIA", "SEI", "ORDI", "1000PEPE", "1000BONK", "SHIB", "FLOKI",
+    "GALA", "FTM", "RUNE", "IMX", "GRT", "LDO", "STX", "ICP", "FET", "AGIX"
+]
 
 # ==========================================
 # FETCH OHLCV
@@ -156,45 +131,20 @@ async def run_bot():
     bot = Bot(token=BOT_TOKEN, request=request)
 
     async with bot:
-        # 1. Sabse pehle Telegram par start ka message bhejein
         try:
             await bot.send_message(
                 chat_id=CHAT_ID,
-                text="🤖 Bot Starting up on Railway...",
+                text=f"🤖 Bot Started Successfully on Railway!\n📊 Scanning {len(MANUAL_PAIRS)} Top Coins every 15 minutes.",
             )
         except Exception as e:
             log.error(f"Telegram start message failed: {e}")
-
-        # 2. Ab pairs ko loop ke andar fetch karein
-        pairs = get_bybit_pairs()
-        
-        if not pairs:
-            log.error("No Bybit pairs loaded.")
-            try:
-                await bot.send_message(
-                    chat_id=CHAT_ID,
-                    text="❌ Error: Bybit se trading pairs load nahi ho paaye. Check Railway Logs!",
-                )
-            except:
-                pass
-            return
-
-        # 3. Agar pairs mil gaye toh successfully batayein
-        try:
-            await bot.send_message(
-                chat_id=CHAT_ID,
-                text=f"📊 Pairs Loaded Successfully!\n🔍 Scanning {len(pairs)} pairs every 15 minutes.",
-            )
-        except:
-            pass
 
         while True:
             scanned = 0
             skipped = 0
             found = 0
 
-            # Sirf pehle 300 pairs scan kar rahe hain taaki rate limit na aaye
-            for symbol in pairs[:300]:
+            for symbol in MANUAL_PAIRS:
                 df = fetch_ohlcv(symbol)
                 if df is None:
                     skipped += 1
@@ -213,13 +163,14 @@ async def run_bot():
                     except Exception as e:
                         log.error(f"Telegram signal delivery error: {e}")
 
-                await asyncio.sleep(0.1)
+                # Chota sa delay taaki Bybit ban na kare
+                await asyncio.sleep(0.2)
 
             summary = (
                 f"📡 Scan Complete\n\n"
-                f"🔍 Scanned: {scanned}\n"
+                f"🔍 Scanned: {scanned} coins\n"
                 f"✅ Signals Found: {found}\n"
-                f"⏭ Skipped: {skipped}\n"
+                f"⏭ Skipped/Error: {skipped}\n"
                 f"⏱ Next scan in 15 minutes"
             )
             try:
