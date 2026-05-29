@@ -18,30 +18,62 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "APNA_BOT_TOKEN_YAHAN")
 CHAT_ID = os.getenv("CHAT_ID", "APNA_CHAT_ID_YAHAN")
 
 INTERVAL_MINUTES = 15
-EMA_FAST = 20
-EMA_SLOW = 200
+EMA_FAST = 9
+EMA_SLOW = 50
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("WeexFixedBot")
+log = logging.getLogger("TradingViewWeexBot")
+
+# =========================================================================
+# FETCH ALL FUTURES COINS DIRECTLY FROM TRADINGVIEW CRYPTO SCANNER BACKEND
+# =========================================================================
+def get_tradingview_futures_tickers():
+    try:
+        log.info("Fetching all active Futures coins from TradingView Scanner...")
+        url = "https://scanner.tradingview.com/crypto/scan"
+        
+        # TradingView Scanner API Payload (Filters for USDT Perpetual Futures)
+        payload = {
+            "filter": [
+                {"left": "typespecs", "operation": "in_range", "right": ["perpetual"]},
+                {"left": "name", "operation": "match", "right": "USDT$"}
+            ],
+            "options": {"lang": "en"},
+            "markets": ["crypto"],
+            "symbols": {"query": {"types": []}, "tickers": []},
+            "columns": ["base_currency"],
+            "sort": {"sortBy": "crypto_total_shares_value", "sortOrder": "desc"},
+            "range": [0, 650] # Top 650 Futures Coins tak scan karega (WEEX/MEXC/Binance ka nichor)
+        }
+        
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        r = requests.post(url, json=payload, headers=headers, timeout=20)
+        
+        tickers = []
+        if r.status_code == 200:
+            data = r.json()
+            for item in data.get("data", []):
+                # TradingView returns format like: "BINANCE:BTCUSDT.P" or "MEXC:SOLUSDT"
+                d_sym = item.get("d", "")
+                base_coin = item.get("s", "").split(":")[-1].replace("USDT", "").replace(".P", "").replace("PERP", "")
+                
+                if base_coin and base_coin not in ["USDT", "USDC", "DAI", "EUR", "BUSD"]:
+                    tickers.append(base_coin)
+                    
+        if not tickers:
+            return ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX"]
+            
+        # Deduplicate list
+        clean_list = list(dict.fromkeys(tickers))
+        log.info(f"Successfully loaded {len(clean_list)} pure Futures coins from TradingView.")
+        return clean_list
+    except Exception as e:
+        log.error(f"Error fetching from TradingView backend: {e}")
+        # Fallback list if API fails
+        return ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "SUI", "APT", "PEPE", "WIF"]
 
 # ==========================================
-# HARDCODED TOP WEEX FUTURES COINS LIST
-# ==========================================
-def get_weex_static_tickers():
-    # Yeh woh saare major coins hain jo WEEX Futures par lazmi trade hote hain.
-    # Isse na exchange API block ka dar hai aur na hi faaltu coins aane ka.
-    return [
-        "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "DOT", "MATIC",
-        "LINK", "SHIB", "LTC", "TRX", "NEAR", "UNI", "APT", "FIL", "ICP", "STX",
-        "IMX", "GRT", "LDO", "OP", "INJ", "SUI", "RNDR", "TIA", "WIF", "PEPE",
-        "ORDI", "1000SATS", "BONK", "FLOKI", "FET", "AGIX", "OCEAN", "GALA", "MKR", "CRV",
-        "RUNE", "AAVE", "EGLD", "FLOW", "AXS", "SAND", "MANA", "THETA", "CHZ", "EOS",
-        "DYDX", "FTM", "GMT", "APE", "JUP", "PYTH", "W", "ENA", "STRK", "ZETA",
-        "JTO", "MEME", "ENS", "WOO", "STG", "MINA", "FXS", "CFX", "ACH", "LRC"
-    ]
-
-# ==========================================
-# FETCH OHLCV (YAHOO FINANCE - NEVER BLOCKS)
+# FETCH OHLCV (YAHOO FINANCE - NO BLOCK ROUTE)
 # ==========================================
 def fetch_ohlcv(symbol):
     pair = f"{symbol}-USD"
@@ -86,7 +118,7 @@ def fetch_ohlcv(symbol):
         return None
 
 # ==========================================
-# INDICATORS & CALCULATIONS
+# TECHNICAL INDICATORS
 # ==========================================
 def calc_ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
@@ -99,20 +131,21 @@ def calc_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 # ==========================================
-# SIGNAL DETECTION LOGIC
+# SIGNAL DETECTION WITH STRICT RSI FILTERS
 # ==========================================
 def detect_signal_details(df):
     close = df["close"]
     if len(close) < EMA_SLOW + 15:
         return None
 
-    ema20 = calc_ema(close, EMA_FAST)
-    ema200 = calc_ema(close, EMA_SLOW)
+    ema9 = calc_ema(close, EMA_FAST)
+    ema50 = calc_ema(close, EMA_SLOW)
     rsi_series = calc_rsi(close, 14)
 
-    current_above = ema20.iloc[-1] > ema200.iloc[-1]
-    previous_above = ema20.iloc[-2] > ema200.iloc[-2]
+    current_above = ema9.iloc[-1] > ema50.iloc[-1]
+    previous_above = ema9.iloc[-2] > ema50.iloc[-2]
 
+    # Crossover check
     if current_above == previous_above:
         return None
 
@@ -120,20 +153,30 @@ def detect_signal_details(df):
     entry_price = float(close.iloc[-1])
     current_rsi = float(rsi_series.iloc[-1])
 
-    last_few_candles = df.tail(5)
-    
+    # 🛑 USER RSI STRATEGY FILTERS (Fake Breakout Protection)
     if signal_type == "LONG":
-        stop_loss = float(last_few_candles["low"].min()) * 0.995 
-        risk = entry_price - stop_loss
-        if risk <= 0: risk = entry_price * 0.01
-        take_profit1 = entry_price + (risk * 1.5)
-        take_profit2 = entry_price + (risk * 2.5)
+        # RSI 50 se upar hona chahiye aur 70 se niche (Overbought se bachne ke liye)
+        if not (50.0 <= current_rsi <= 70.0):
+            return None
     else:
-        stop_loss = float(last_few_candles["high"].max()) * 1.005
+        # SHORT ke liye RSI 50 se niche hona chahiye aur 30 se upar (Oversold se bachne ke liye)
+        if not (30.0 <= current_rsi <= 50.0):
+            return None
+
+    # Risk Management Calculation (Tight Swing Based)
+    last_few_candles = df.tail(4)
+    if signal_type == "LONG":
+        stop_loss = float(last_few_candles["low"].min()) * 0.996
+        risk = entry_price - stop_loss
+        if risk <= 0: risk = entry_price * 0.008
+        take_profit1 = entry_price + (risk * 1.3)
+        take_profit2 = entry_price + (risk * 2.3)
+    else:
+        stop_loss = float(last_few_candles["high"].max()) * 1.004
         risk = stop_loss - entry_price
-        if risk <= 0: risk = entry_price * 0.01
-        take_profit1 = entry_price - (risk * 1.5)
-        take_profit2 = entry_price - (risk * 2.5)
+        if risk <= 0: risk = entry_price * 0.008
+        take_profit1 = entry_price - (risk * 1.3)
+        take_profit2 = entry_price - (risk * 2.3)
 
     return {
         "type": signal_type,
@@ -158,16 +201,17 @@ def build_message(symbol, signal):
     emoji = "🟢" if signal["type"] == "LONG" else "🔴"
     
     return (
-        f"🚨 **NEW WEEX FUTURES SIGNAL** 🚨\n\n"
-        f"🪙 **Coin:** #{symbol}/USDT\n"
+        f"🚨 **CONFIRMED FUTURES SIGNAL (9/50 EMA)** 🚨\n\n"
+        f"🪙 **Coin:** #{symbol}/USDT (Futures)\n"
         f"📈 **Direction:** {emoji} {signal['type']}\n"
         f"⏱ **Timeframe:** 15 Minute\n\n"
         f"📥 **Entry Price:** {fmt(signal['entry'])}\n"
         f"🎯 **Take Profit 1:** {fmt(signal['tp1'])}\n"
         f"🎯 **Take Profit 2:** {fmt(signal['tp2'])}\n"
         f"🛑 **Stop Loss:** {fmt(signal['sl'])}\n\n"
-        f"📊 **Extra Info:**\n"
-        f"ℹ️ RSI (14): {signal['rsi']:.1f}\n\n"
+        f"📊 **Filter Status:**\n"
+        f"✅ RSI (14) Validated: {signal['rsi']:.1f}\n\n"
+        f"💼 _Exchanges: WEEX / MEXC / Binance Futures_\n"
         f"🕒 _Generated at: {now}_"
     )
 
@@ -182,18 +226,19 @@ async def run_bot():
         try:
             await bot.send_message(
                 chat_id=CHAT_ID,
-                text="🤖 Bot Activated!\n📋 Fixed WEEX Coins List Loaded via Bulletproof Server Data.",
+                text="🤖 TradingView Futures Bot Online!\n⚡ 9/50 EMA Strategy with Smart RSI Filters Activated.",
             )
         except Exception as e:
             log.error(f"Telegram start message failed: {e}")
 
         while True:
-            pairs_list = get_weex_static_tickers()
+            # Load coins dynamically using TradingView backend scanner
+            pairs_list = get_tradingview_futures_tickers()
 
             try:
                 await bot.send_message(
                     chat_id=CHAT_ID,
-                    text=f"📊 WEEX Verified List Loaded!\n🔍 Scanning {len(pairs_list)} Major Crypto Charts...",
+                    text=f"📊 TradingView Scanner Loaded!\n🔍 Scanning {len(pairs_list)} Global Futures Pairs (15m)...",
                 )
             except:
                 pass
@@ -222,14 +267,15 @@ async def run_bot():
                     except Exception as e:
                         log.error(f"Telegram signal delivery error: {e}")
 
-                await asyncio.sleep(0.3)
+                # Safe scanning delay
+                await asyncio.sleep(0.2)
 
             summary = (
-                f"📡 **Scan Complete**\n\n"
-                f"🔍 Scanned Coins: {scanned}\n"
-                f"✅ Signals Found: {found}\n"
-                f"⏭ Skipped: {skipped}\n"
-                f"⏱ Next scan in 15 minutes"
+                f"📡 **Global Scan Complete**\n\n"
+                f"🔍 Total Scanned: {scanned} coins\n"
+                f"✅ Verified High-Confidence Signals: {found}\n"
+                f"⏭ Skipped/No Volume: {skipped}\n"
+                f"⏱ Next massive scan in 15 minutes"
             )
             try:
                 await bot.send_message(chat_id=CHAT_ID, text=summary, parse_mode="Markdown")
