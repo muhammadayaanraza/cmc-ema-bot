@@ -23,7 +23,6 @@ CANDLE_LIMIT = 250
 
 BYBIT_BASE = "https://api.bytick.com"
 
-# Railway bypass karne ke liye generic browser headers
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "application/json",
@@ -46,7 +45,7 @@ def get_bybit_pairs():
         )
         
         if r.status_code != 200:
-            log.error(f"Bybit IP Blocked or Server Error. Status Code: {r.status_code}")
+            log.error(f"Bybit Server Error. Status Code: {r.status_code}")
             return []
 
         data = r.json()
@@ -59,6 +58,7 @@ def get_bybit_pairs():
         for item in data.get("result", {}).get("list", []):
             symbol = item.get("symbol")
             if symbol and symbol.endswith("USDT"):
+                # "USDT" hata kar sirf coin ka naam rakh rahe hain (jaise BTC)
                 pairs.append(symbol.replace("USDT", ""))
 
         log.info(f"Loaded {len(pairs)} Bybit pairs")
@@ -67,8 +67,6 @@ def get_bybit_pairs():
     except Exception as e:
         log.error(f"Pair fetch error: {e}")
         return []
-
-PAIRS = get_bybit_pairs()
 
 # ==========================================
 # FETCH OHLCV
@@ -154,28 +152,49 @@ def build_message(symbol, signal):
 # MAIN BOT LOOP
 # ==========================================
 async def run_bot():
-    if not PAIRS:
-        log.error("No Bybit pairs loaded. Exiting.")
-        return
-
     request = HTTPXRequest(connection_pool_size=15)
     bot = Bot(token=BOT_TOKEN, request=request)
 
     async with bot:
+        # 1. Sabse pehle Telegram par start ka message bhejein
         try:
             await bot.send_message(
                 chat_id=CHAT_ID,
-                text=f"🤖 Bot Started\n📊 Scanning {len(PAIRS)} Bybit pairs every 15 minutes",
+                text="🤖 Bot Starting up on Railway...",
             )
         except Exception as e:
             log.error(f"Telegram start message failed: {e}")
+
+        # 2. Ab pairs ko loop ke andar fetch karein
+        pairs = get_bybit_pairs()
+        
+        if not pairs:
+            log.error("No Bybit pairs loaded.")
+            try:
+                await bot.send_message(
+                    chat_id=CHAT_ID,
+                    text="❌ Error: Bybit se trading pairs load nahi ho paaye. Check Railway Logs!",
+                )
+            except:
+                pass
+            return
+
+        # 3. Agar pairs mil gaye toh successfully batayein
+        try:
+            await bot.send_message(
+                chat_id=CHAT_ID,
+                text=f"📊 Pairs Loaded Successfully!\n🔍 Scanning {len(pairs)} pairs every 15 minutes.",
+            )
+        except:
+            pass
 
         while True:
             scanned = 0
             skipped = 0
             found = 0
 
-            for symbol in PAIRS[:300]:
+            # Sirf pehle 300 pairs scan kar rahe hain taaki rate limit na aaye
+            for symbol in pairs[:300]:
                 df = fetch_ohlcv(symbol)
                 if df is None:
                     skipped += 1
