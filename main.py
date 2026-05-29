@@ -25,42 +25,53 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("EMABot")
 
 # ==========================================
-# 100+ TOP CRYPTO COINS LIST
+# AUTOMATIC TOP 500 COINS FETCH
 # ==========================================
-MANUAL_PAIRS = [
-    "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "DOT", "MATIC",
-    "LINK", "UNI", "LTC", "ATOM", "TRX", "BCH", "NEAR", "FIL", "APT", "ARB",
-    "OP", "INJ", "SUI", "TIA", "SEI", "ORDI", "SHIB", "GALA", "FTM", "RUNE",
-    "IMX", "GRT", "LDO", "STX", "ICP", "FET", "RENDER", "RNDR", "WIF", "PEPE",
-    "FLOKI", "BONK", "JUP", "PYTH", "ENA", "CORE", "PENDLE", "TON", "STX", "MKR",
-    "RSTK", "ETHFI", "AAVE", "IMX", "THETA", "ALGO", "EGLD", "FLOW", "SAND", "MANA",
-    "AXS", "MINA", "DYDX", "CRV", "CHZ", "HOT", "LRC", "COMP", "SNX", "ZIL",
-    "ENJ", "BAT", "YFI", "QTUM", "ONT", "IOST", "OMG", "ZRX", "JST", "SUN",
-    "RVN", "WAVES", "ICX", "KAVA", "ANKR", "ONE", "CELO", "SKL", "VET", "NEO"
-]
+def get_top_500_tickers():
+    try:
+        log.info("Fetching Top 500 Cryptos from Coingecko...")
+        # CryptoCompare ya CoinGecko ki public API se top 500 coins uthana
+        url = "https://min-api.cryptocompare.com/data/top/mktcapfull"
+        
+        tickers = []
+        # 100-100 karke batches mein top 500 tak list banana (Aapki requirement ke mutabik)
+        for page in range(0, 5):
+            params = {"limit": "100", "tsym": "USD", "page": str(page)}
+            r = requests.get(url, params=params, timeout=15)
+            if r.status_code == 200:
+                data = r.json()
+                for coin in data.get("Data", []):
+                    info = coin.get("CoinInfo", {})
+                    name = info.get("Name")
+                    # Stable coins aur fiat ko skip karna taaki galat signals na aayein
+                    if name and name not in ["USDT", "USDC", "FDUSD", "DAI", "EUR", "GBP"]:
+                        tickers.append(name)
+            await asyncio.sleep(0.1)
+            
+        # Agar API fail ho toh backup list kaam karegi
+        if not tickers:
+            return ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "DOT", "MATIC"]
+            
+        # Duplicate remove karna aur unique top 500 return karna
+        return list(dict.fromkeys(tickers))[:500]
+    except Exception as e:
+        log.error(f"Error fetching top 500 list: {e}")
+        return ["BTC", "ETH", "SOL", "BNB", "XRP"]
 
 # ==========================================
-# FETCH OHLCV (USING PUBLIC STABLE API)
+# FETCH OHLCV (USING YAHOO FINANCE)
 # ==========================================
 def fetch_ohlcv(symbol):
     pair = f"{symbol}-USD"
     try:
-        # Yahoo Finance ka 15-minute interval public data endpoint (No Block)
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair}"
         params = {
-            "region": "US",
-            "lang": "en-US",
-            "includePrePost": "false",
-            "interval": "15m",
-            "useYF": "true",
-            "range": "5d"
+            "region": "US", "lang": "en-US", "includePrePost": "false",
+            "interval": "15m", "useYF": "true", "range": "5d"
         }
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         
-        r = requests.get(url, params=params, headers=headers, timeout=15)
-        
+        r = requests.get(url, params=params, headers=headers, timeout=10)
         if r.status_code != 200:
             return None
 
@@ -81,25 +92,15 @@ def fetch_ohlcv(symbol):
         if not timestamps or len(closes) < EMA_SLOW:
             return None
 
-        # Dataframe build karna
         df = pd.DataFrame({
-            "ts": timestamps,
-            "open": opens,
-            "high": highs,
-            "low": lows,
-            "close": closes
-        })
-        
-        # Missing values clean karna
-        df = df.dropna().reset_index(drop=True)
+            "ts": timestamps, "open": opens, "high": highs, "low": lows, "close": closes
+        }).dropna().reset_index(drop=True)
         
         if len(df) < EMA_SLOW:
             return None
             
         return df
-
-    except Exception as e:
-        log.error(f"{symbol} fetch error: {e}")
+    except Exception:
         return None
 
 # ==========================================
@@ -124,9 +125,6 @@ def detect_signal(df):
 
     return "LONG" if current_above else "SHORT"
 
-# ==========================================
-# TELEGRAM MESSAGE
-# ==========================================
 def build_message(symbol, signal):
     now = datetime.now(timezone.utc).strftime("%d %b %Y %H:%M UTC")
     return (
@@ -140,24 +138,48 @@ def build_message(symbol, signal):
 # MAIN BOT LOOP
 # ==========================================
 async def run_bot():
-    request = HTTPXRequest(connection_pool_size=15)
+    request = HTTPXRequest(connection_pool_size=30)
     bot = Bot(token=BOT_TOKEN, request=request)
 
     async with bot:
         try:
             await bot.send_message(
                 chat_id=CHAT_ID,
-                text=f"🤖 Bot Started Successfully!\n📊 Scanning {len(MANUAL_PAIRS)} Top Coins via Global Networks.",
+                text="🤖 Bot Starting up...\n🔄 Loading Top 500 Crypto Coins List dynamically...",
             )
         except Exception as e:
             log.error(f"Telegram start message failed: {e}")
 
         while True:
+            # Har scan se pehle market cap ke mutabik top 500 naye list refresh hogi
+            try:
+                url = "https://min-api.cryptocompare.com/data/top/mktcapfull"
+                pairs_list = []
+                for page in range(0, 5):
+                    r = requests.get(url, params={"limit": "100", "tsym": "USD", "page": str(page)}, timeout=15)
+                    if r.status_code == 200:
+                        for coin in r.json().get("Data", []):
+                            name = coin.get("CoinInfo", {}).get("Name")
+                            if name and name not in ["USDT", "USDC", "FDUSD", "DAI", "EUR", "BUSD"]:
+                                pairs_list.append(name)
+                    await asyncio.sleep(0.1)
+                pairs_list = list(dict.fromkeys(pairs_list))[:500]
+            except:
+                pairs_list = ["BTC", "ETH", "SOL"]
+
+            try:
+                await bot.send_message(
+                    chat_id=CHAT_ID,
+                    text=f"📊 Dynamic List Loaded!\n🔍 Scanning current Top {len(pairs_list)} Coins in the market.",
+                )
+            except:
+                pass
+
             scanned = 0
             skipped = 0
             found = 0
 
-            for symbol in MANUAL_PAIRS:
+            for symbol in pairs_list:
                 df = fetch_ohlcv(symbol)
                 if df is None:
                     skipped += 1
@@ -176,14 +198,14 @@ async def run_bot():
                     except Exception as e:
                         log.error(f"Telegram signal delivery error: {e}")
 
-                # Rate limiting se bachne ke liye chota delay
-                await asyncio.sleep(0.2)
+                # Rate limiting se bachne ke liye thoda delay (Maha-Zaroori hai 500 coins ke liye)
+                await asyncio.sleep(0.3)
 
             summary = (
-                f"📡 Scan Complete\n\n"
-                f"🔍 Scanned: {scanned} coins\n"
+                f"📡 Scan Complete (Top 500 Cycle)\n\n"
+                f"🔍 Successfully Scanned: {scanned} coins\n"
                 f"✅ Signals Found: {found}\n"
-                f"⏭ Skipped/Error: {skipped}\n"
+                f"⏭ Skipped/No Data: {skipped}\n"
                 f"⏱ Next scan in 15 minutes"
             )
             try:
@@ -195,11 +217,8 @@ async def run_bot():
 
 if __name__ == "__main__":
     if "APNA" in BOT_TOKEN or not BOT_TOKEN:
-        log.error("Set valid BOT_TOKEN first")
         raise SystemExit
-
     if "APNA" in CHAT_ID or not CHAT_ID:
-        log.error("Set valid CHAT_ID first")
         raise SystemExit
 
     asyncio.run(run_bot())
