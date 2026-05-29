@@ -21,63 +21,85 @@ EMA_FAST = 20
 EMA_SLOW = 200
 CANDLE_LIMIT = 250
 
-# Data Fetching ke liye Binance use karenge kyunki yeh Railway ko block nahi karta
-BINANCE_BASE = "https://api.binance.com"
-
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("EMABot")
 
 # ==========================================
-# MANUAL COINS LIST
+# 100+ TOP CRYPTO COINS LIST
 # ==========================================
 MANUAL_PAIRS = [
     "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "DOT", "MATIC",
     "LINK", "UNI", "LTC", "ATOM", "TRX", "BCH", "NEAR", "FIL", "APT", "ARB",
-    "OP", "INJ", "SUI", "TIA", "SEI", "ORDI", "SHIB", "GALA", "FTM", "RUNE", 
-    "IMX", "GRT", "LDO", "STX", "ICP", "FET"
+    "OP", "INJ", "SUI", "TIA", "SEI", "ORDI", "SHIB", "GALA", "FTM", "RUNE",
+    "IMX", "GRT", "LDO", "STX", "ICP", "FET", "RENDER", "RNDR", "WIF", "PEPE",
+    "FLOKI", "BONK", "JUP", "PYTH", "ENA", "CORE", "PENDLE", "TON", "STX", "MKR",
+    "RSTK", "ETHFI", "AAVE", "IMX", "THETA", "ALGO", "EGLD", "FLOW", "SAND", "MANA",
+    "AXS", "MINA", "DYDX", "CRV", "CHZ", "HOT", "LRC", "COMP", "SNX", "ZIL",
+    "ENJ", "BAT", "YFI", "QTUM", "ONT", "IOST", "OMG", "ZRX", "JST", "SUN",
+    "RVN", "WAVES", "ICX", "KAVA", "ANKR", "ONE", "CELO", "SKL", "VET", "NEO"
 ]
 
 # ==========================================
-# FETCH OHLCV (NOW USING BINANCE)
+# FETCH OHLCV (USING PUBLIC STABLE API)
 # ==========================================
 def fetch_ohlcv(symbol):
-    pair = f"{symbol}USDT"
+    pair = f"{symbol}-USD"
     try:
-        # Binance Kline API endpoint
-        r = requests.get(
-            f"{BINANCE_BASE}/api/v3/klines",
-            params={
-                "symbol": pair,
-                "interval": "15m",
-                "limit": str(CANDLE_LIMIT),
-            },
-            timeout=15,
-        )
+        # Yahoo Finance ka 15-minute interval public data endpoint (No Block)
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair}"
+        params = {
+            "region": "US",
+            "lang": "en-US",
+            "includePrePost": "false",
+            "interval": "15m",
+            "useYF": "true",
+            "range": "5d"
+        }
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        
+        r = requests.get(url, params=params, headers=headers, timeout=15)
         
         if r.status_code != 200:
-            log.error(f"Binance error for {pair}: Status {r.status_code}")
             return None
 
-        raw = r.json()
-        if not raw or len(raw) < EMA_SLOW:
+        data = r.json()
+        result = data.get("chart", {}).get("result", [])
+        if not result:
             return None
 
-        # Binance format ko DataFrame mein convert kar rahe hain
-        df = pd.DataFrame(
-            raw,
-            columns=[
-                "ts", "open", "high", "low", "close", "volume", 
-                "close_time", "asset_volume", "trades", "taker_base", "taker_quote", "ignore"
-            ]
-        )
+        candles = result[0]
+        timestamps = candles.get("timestamp", [])
+        indicators = candles.get("indicators", {}).get("quote", [{}])[0]
+        
+        closes = indicators.get("close", [])
+        opens = indicators.get("open", [])
+        highs = indicators.get("high", [])
+        lows = indicators.get("low", [])
 
-        for col in ["open", "high", "low", "close"]:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
+        if not timestamps or len(closes) < EMA_SLOW:
+            return None
 
+        # Dataframe build karna
+        df = pd.DataFrame({
+            "ts": timestamps,
+            "open": opens,
+            "high": highs,
+            "low": lows,
+            "close": closes
+        })
+        
+        # Missing values clean karna
+        df = df.dropna().reset_index(drop=True)
+        
+        if len(df) < EMA_SLOW:
+            return None
+            
         return df
 
     except Exception as e:
-        log.error(f"{pair} fetch error: {e}")
+        log.error(f"{symbol} fetch error: {e}")
         return None
 
 # ==========================================
@@ -125,7 +147,7 @@ async def run_bot():
         try:
             await bot.send_message(
                 chat_id=CHAT_ID,
-                text=f"🤖 Bot Started Successfully!\n📊 Scanning {len(MANUAL_PAIRS)} Top Coins via Binance Data.",
+                text=f"🤖 Bot Started Successfully!\n📊 Scanning {len(MANUAL_PAIRS)} Top Coins via Global Networks.",
             )
         except Exception as e:
             log.error(f"Telegram start message failed: {e}")
@@ -154,6 +176,7 @@ async def run_bot():
                     except Exception as e:
                         log.error(f"Telegram signal delivery error: {e}")
 
+                # Rate limiting se bachne ke liye chota delay
                 await asyncio.sleep(0.2)
 
             summary = (
