@@ -21,26 +21,22 @@ FAST_PERIOD = 9
 SLOW_PERIOD = 50
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("EngineV5")
+logger = logging.getLogger("EngineV6_Fixed")
 
 # ==========================================================
-# 1. PURE ENGINE TICKERS (NO HARDCODED 5-COIN FILTERS)
+# 1. MARKET TICKERS FETCH (FORCE UPPERCASE)
 # ==========================================================
 def load_market_tickers():
-    # Yeh robust list hai jo bina kisi API ke bhi direct chalegi
     hardcoded_pairs = [
         "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "AVAXUSDT", 
         "LINKUSDT", "DOTUSDT", "MATICUSDT", "SHIBUSDT", "LTCUSDT", "TRXUSDT", "NEARUSDT", "FILUSDT",
         "BCHUSDT", "UNIUSDT", "ICPUSDT", "STXUSDT", "APTUSDT", "SUIUSDT", "OPUSDT", "ARBUSDT",
         "INJUSDT", "TIAUSDT", "IMXUSDT", "ORDIUSDT", "WIFUSDT", "PEPEUSDT", "BONKUSDT", "FLOKIUSDT",
-        "JUPUSDT", "PYTHUSDT", "DYMUSDT", "STRKUSDT", "PENDLEUSDT", "FETUSDT", "AGIXUSDT", "RNDRUSDT",
-        "GALAUSDT", "FTMUSDT", "LDOUSDT", "MKRUSDT", "CRVUSDT", "AAVEUSDT", "COMPUSDT", "YFIUSDT",
-        "RUNEUSDT", "EGLDUSDT", "THETAUSDT", "ENJUSDT", "SANDUSDT", "MANAUSDT", "AXSUSDT", "CHZUSDT"
+        "JUPUSDT", "PYTHUSDT", "DYMUSDT", "STRKUSDT", "PENDLEUSDT", "FETUSDT", "GALAUSDT", "FTMUSDT"
     ]
     
     try:
-        logger.info("Connecting to direct V1 endpoint...")
-        # Direct fallback backup endpoint
+        logger.info("Connecting to live ticker endpoint...")
         api_url = "https://fapi.binance.com/fapi/v1/ticker/price"
         res = requests.get(api_url, timeout=10)
         
@@ -49,12 +45,14 @@ def load_market_tickers():
             fresh_list = []
             for item in raw_data:
                 symbol_name = item.get("symbol", "")
-                if symbol_name.endswith("USDT"):
-                    if not any(bad in symbol_name for bad in ["USDC", "BUSD", "EUR"]):
-                        fresh_list.append(symbol_name)
+                if symbol_name:
+                    symbol_name = symbol_name.upper().strip() # Force Strict Uppercase
+                    if symbol_name.endswith("USDT"):
+                        if not any(bad in symbol_name for bad in ["USDC", "BUSD", "EUR"]):
+                            fresh_list.append(symbol_name)
             
             if len(fresh_list) > 10:
-                logger.info(f"Successfully loaded {len(fresh_list)} real coins.")
+                logger.info(f"Successfully loaded {len(fresh_list)} real uppercase coins.")
                 return list(dict.fromkeys(fresh_list))
                 
         return hardcoded_pairs
@@ -63,25 +61,31 @@ def load_market_tickers():
         return hardcoded_pairs
 
 # ==========================================================
-# 2. CANDLESTICK FETCH ENGINE
+# 2. BULLETPROOF CANDLESTICK FETCH (STRICT UPPERCASE)
 # ==========================================================
 def extract_candles(symbol_ticker):
     try:
+        # Ticker ko bilkul capitalize karke bhej rahe hain taaki Binance reject na kare
+        clean_symbol = str(symbol_ticker).upper().strip()
+        
         endpoint = "https://fapi.binance.com/fapi/v1/klines"
-        query_params = {"symbol": symbol_ticker, "interval": "15m", "limit": "100"}
+        query_params = {"symbol": clean_symbol, "interval": "15m", "limit": "100"}
         
         response = requests.get(endpoint, params=query_params, timeout=8)
         if response.status_code != 200:
+            logger.warning(f"Binance rejected symbol {clean_symbol} with status {response.status_code}")
             return None
             
         json_payload = response.json()
         if not json_payload or len(json_payload) < SLOW_PERIOD:
             return None
             
-        dataset = pd.DataFrame(json_payload, columns=[
-            "ts", "open", "high", "low", "close", "volume", 
-            "close_time", "asset_volume", "trades", "taker_buy_base", "taker_buy_quote", "ignore"
-        ])
+        # Sirf pehle 6 columns target kar rahe hain jo technical analysis ke liye chahiye
+        candles_clean = []
+        for c in json_payload:
+            candles_clean.append([c[0], c[1], c[2], c[3], c[4], c[5]])
+            
+        dataset = pd.DataFrame(candles_clean, columns=["ts", "open", "high", "low", "close", "volume"])
         
         dataset["open"] = dataset["open"].astype(float)
         dataset["high"] = dataset["high"].astype(float)
@@ -89,7 +93,8 @@ def extract_candles(symbol_ticker):
         dataset["close"] = dataset["close"].astype(float)
         
         return dataset
-    except Exception:
+    except Exception as e:
+        logger.error(f"Error fetching candles for {symbol_ticker}: {e}")
         return None
 
 # ==========================================
@@ -192,7 +197,7 @@ async def core_execution():
         try:
             await telegram_bot.send_message(
                 chat_id=CHAT_ID,
-                text="🤖 WEEX Native Core Engine V5 Online!\n⚡ Cache broken. Monitoring fresh assets.",
+                text="🤖 WEEX Native Core Engine V6 Online!\n⚡ Strict formatting active. Scanning live matrix.",
             )
         except Exception as e:
             logger.error(f"Startup notification failed: {e}")
