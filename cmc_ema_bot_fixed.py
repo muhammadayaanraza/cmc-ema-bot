@@ -44,9 +44,10 @@ try:
     from telegram import Bot
     from telegram.constants import ParseMode
     from telegram.error import TelegramError
+    from telegram.request import HTTPXRequest
 except ImportError as e:
     print(f"\n❌ Missing library: {e}")
-    print("   Run:  pip install python-telegram-bot requests pandas numpy\n")
+    print("   Run:  pip install python-telegram-bot requests pandas numpy httpx\n")
     raise SystemExit(1)
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -373,7 +374,8 @@ def signal_key(symbol: str, sig: dict) -> str:
 # ═════════════════════════════════════════════════════════════════════════════
 
 async def run_bot():
-    bot   = Bot(token=BOT_TOKEN)
+    request = HTTPXRequest(connection_pool_size=8)
+    bot     = Bot(token=BOT_TOKEN, request=request)
     state = load_state()
 
     # ── Startup message ──────────────────────────────────────────────────────
