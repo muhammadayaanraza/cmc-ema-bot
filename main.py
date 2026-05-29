@@ -21,57 +21,65 @@ FAST_PERIOD = 9
 SLOW_PERIOD = 50
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("HybridEngineV7")
+logger = logging.getLogger("CryptoCompareEngine")
 
 # ==========================================================
-# 1. FIXED 100+ HIGH VOLUME FUTURES COINS LIST (NO DROP)
+# 1. FIXED TOP 80+ HIGH VOLUME TRADING COINS (STRICT NO DROP)
 # ==========================================================
 def load_market_tickers():
-    # Strict High-Volume 100+ pairs taaki quantity kabhi kam na ho
     return [
-        "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "AVAXUSDT", 
-        "LINKUSDT", "DOTUSDT", "MATICUSDT", "SHIBUSDT", "LTCUSDT", "TRXUSDT", "NEARUSDT", "FILUSDT",
-        "BCHUSDT", "UNIUSDT", "ICPUSDT", "STXUSDT", "APTUSDT", "SUIUSDT", "OPUSDT", "ARBUSDT",
-        "INJUSDT", "TIAUSDT", "IMXUSDT", "ORDIUSDT", "WIFUSDT", "PEPEUSDT", "BONKUSDT", "FLOKIUSDT",
-        "JUPUSDT", "PYTHUSDT", "DYMUSDT", "STRKUSDT", "PENDLEUSDT", "FETUSDT", "GALAUSDT", "FTMUSDT",
-        "LDOUSDT", "MKRUSDT", "CRVUSDT", "AAVEUSDT", "COMPUSDT", "YFIUSDT", "RUNEUSDT", "EGLDUSDT",
-        "THETAUSDT", "ENJUSDT", "SANDUSDT", "MANAUSDT", "AXSUSDT", "CHZUSDT", "ZILUSDT", "ONEUSDT",
-        "HOTUSDT", "ANKRUSDT", "GRTUSDT", "WAVESUSDT", "SNXUSDT", "NEOUSDT", "QTUMUSDT", "EOSUSDT",
-        "IOTAUSDT", "XMRUSDT", "DASHUSDT", "ZECUSDT", "ETCUSDT", "KAVAUSDT", "BANDUSDT", "RLCUSDT",
-        "BLZUSDT", "TRBUSDT", "STORJUSDT", "MINAUSDT", "FLOWUSDT", "WOOUSDT", "ENSUSDT", "LRCUSDT",
-        "ALPHAUSDT", "BELUSDT", "RENUSDT", "PEOPLEUSDT", "WLDUSDT", "ARKMUSDT", "GMTUSDT", "ANKRUSDT"
+        "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", 
+        "LINK", "DOT", "MATIC", "SHIB", "LTC", "TRX", "NEAR", "FIL",
+        "BCH", "UNI", "ICP", "STX", "APT", "SUI", "OP", "ARB",
+        "INJ", "TIA", "IMX", "ORDI", "WIF", "PEPE", "BONK", "FLOKI",
+        "JUP", "PYTH", "DYM", "STRK", "PENDLE", "FET", "GALA", "FTM",
+        "LDO", "MKR", "CRV", "AAVE", "COMP", "YFI", "RUNE", "EGLD",
+        "THETA", "ENJ", "SAND", "MANA", "AXS", "CHZ", "ZIL", "ONE",
+        "HOT", "ANKR", "GRT", "WAVES", "SNX", "NEO", "QTUM", "EOS",
+        "IOTA", "XMR", "DASH", "ZEC", "ETC", "KAVA", "BAND", "RLC",
+        "BLZ", "TRB", "STORJ", "MINA", "FLOW", "WOO", "ENS", "LRC",
+        "PEOPLE", "WLD", "ARKM", "GMT"
     ]
 
 # ==========================================================
-# 2. ALTERNATIVE DATA ENDPOINT (PUBLIC RATE-LIMIT SAFE)
+# 2. ANTI-BLOCK DATA FETCHING (CRYPTOCOMPARE OPEN NODE)
 # ==========================================================
-def extract_candles(symbol_ticker):
+def extract_candles(symbol):
     try:
-        clean_symbol = str(symbol_ticker).upper().strip()
-        # Public non-blocked proxy market data endpoint for spot/futures mirroring
-        url = f"https://api.binance.com/api/v3/klines"
-        query_params = {"symbol": clean_symbol, "interval": "15m", "limit": "100"}
-        
-        # Adding browser headers to prevent Railway IP blocking
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        # Yeh endpoint Railway IPs ko bilkul block nahi karta
+        url = "https://min-api.cryptocompare.com/data/v2/histominute"
+        query_params = {
+            "fsym": symbol.upper().strip(),
+            "tsym": "USDT",
+            "limit": "100",
+            "aggregate": "15"  # 15 Minute timeframe candles
         }
         
+        headers = {"User-Agent": "Mozilla/5.0"}
         response = requests.get(url, params=query_params, headers=headers, timeout=10)
+        
         if response.status_code != 200:
             return None
             
         json_payload = response.json()
-        if not json_payload or len(json_payload) < SLOW_PERIOD:
+        if json_payload.get("Response") != "Success":
+            return None
+            
+        raw_candles = json_payload.get("Data", {}).get("Data", [])
+        if not raw_candles or len(raw_candles) < SLOW_PERIOD:
             return None
             
         candles_clean = []
-        for c in json_payload:
-            candles_clean.append([int(c[0]), float(c[1]), float(c[2]), float(c[3]), float(c[4]), float(c[5])])
+        for c in raw_candles:
+            candles_clean.append([
+                c["time"], float(c["open"]), float(c["high"]), 
+                float(c["low"]), float(c["close"]), float(c["volumeto"])
+            ])
             
         dataset = pd.DataFrame(candles_clean, columns=["ts", "open", "high", "low", "close", "volume"])
         return dataset
-    except Exception:
+    except Exception as e:
+        logger.error(f"Error fetching {symbol}: {e}")
         return None
 
 # ==========================================
@@ -138,7 +146,6 @@ def analyze_market_trends(df):
 # ==========================================
 def format_alert_message(symbol, signal_data):
     gmt_now = datetime.now(timezone.utc).strftime("%d %b %Y %H:%M UTC")
-    clean_name = symbol.replace("USDT", "")
     
     def price_format(n):
         if n >= 100: return f"{n:.2f}"
@@ -149,7 +156,7 @@ def format_alert_message(symbol, signal_data):
     
     return (
         f"🚨 **CONFIRMED FUTURES SIGNAL (9/50 EMA)** 🚨\n\n"
-        f"🪙 **Coin:** #{clean_name}/USDT\n"
+        f"🪙 **Coin:** #{symbol.upper()}/USDT\n"
         f"📈 **Direction:** {arrow} {signal_data['direction']}\n"
         f"⏱ **Timeframe:** 15 Minute\n\n"
         f"📥 **Entry Price:** {price_format(signal_data['entry'])}\n"
@@ -172,7 +179,7 @@ async def core_execution():
         try:
             await telegram_bot.send_message(
                 chat_id=CHAT_ID,
-                text="🤖 WEEX Hybrid Anti-Block Engine V7 Online!\n⚡ Strict list protection active.",
+                text="🤖 WEEX Anti-Block Engine V8 Live!\n⚡ Shifting data source to Open-Node Architecture.",
             )
         except Exception as e:
             logger.error(f"Startup notification failed: {e}")
@@ -183,7 +190,7 @@ async def core_execution():
             try:
                 await telegram_bot.send_message(
                     chat_id=CHAT_ID,
-                    text=f"🔄 Hybrid Market Synchronized!\n🔍 Scanning exactly {len(target_markets)} High-Volume Coins...",
+                    text=f"🔄 Cloud Nodes Synchronized!\n🔍 Scanning exactly {len(target_markets)} High-Volume Coins...",
                 )
             except:
                 pass
@@ -196,7 +203,6 @@ async def core_execution():
                 dataframe = extract_candles(coin_symbol)
                 if dataframe is None:
                     skipped_count += 1
-                    await asyncio.sleep(0.2)  # Higher backoff to prevent blocking
                     continue
 
                 scanned_count += 1
@@ -213,7 +219,8 @@ async def core_execution():
                     except Exception as e:
                         logger.error(f"Telegram alert error: {e}")
 
-                await asyncio.sleep(0.2)  # Smooth processing delay
+                # Safe request spacing
+                await asyncio.sleep(0.1)
 
             final_report = (
                 f"📡 **Scan Complete Successfully**\n\n"
