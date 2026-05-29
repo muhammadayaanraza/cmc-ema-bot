@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import time
 from datetime import datetime, timezone
 
 import requests
@@ -25,16 +26,14 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("EMABot")
 
 # ==========================================
-# AUTOMATIC TOP 500 COINS FETCH
+# AUTOMATIC TOP 500 COINS FETCH (FIXED)
 # ==========================================
 def get_top_500_tickers():
     try:
-        log.info("Fetching Top 500 Cryptos from Coingecko...")
-        # CryptoCompare ya CoinGecko ki public API se top 500 coins uthana
+        log.info("Fetching Top 500 Cryptos from CryptoCompare...")
         url = "https://min-api.cryptocompare.com/data/top/mktcapfull"
         
         tickers = []
-        # 100-100 karke batches mein top 500 tak list banana (Aapki requirement ke mutabik)
         for page in range(0, 5):
             params = {"limit": "100", "tsym": "USD", "page": str(page)}
             r = requests.get(url, params=params, timeout=15)
@@ -43,16 +42,14 @@ def get_top_500_tickers():
                 for coin in data.get("Data", []):
                     info = coin.get("CoinInfo", {})
                     name = info.get("Name")
-                    # Stable coins aur fiat ko skip karna taaki galat signals na aayein
-                    if name and name not in ["USDT", "USDC", "FDUSD", "DAI", "EUR", "GBP"]:
+                    if name and name not in ["USDT", "USDC", "FDUSD", "DAI", "EUR", "GBP", "BUSD"]:
                         tickers.append(name)
-            await asyncio.sleep(0.1)
+            # Normal function ke liye time.sleep use kiya hai (No crash)
+            time.sleep(0.1)
             
-        # Agar API fail ho toh backup list kaam karegi
         if not tickers:
             return ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "DOT", "MATIC"]
             
-        # Duplicate remove karna aur unique top 500 return karna
         return list(dict.fromkeys(tickers))[:500]
     except Exception as e:
         log.error(f"Error fetching top 500 list: {e}")
@@ -151,21 +148,8 @@ async def run_bot():
             log.error(f"Telegram start message failed: {e}")
 
         while True:
-            # Har scan se pehle market cap ke mutabik top 500 naye list refresh hogi
-            try:
-                url = "https://min-api.cryptocompare.com/data/top/mktcapfull"
-                pairs_list = []
-                for page in range(0, 5):
-                    r = requests.get(url, params={"limit": "100", "tsym": "USD", "page": str(page)}, timeout=15)
-                    if r.status_code == 200:
-                        for coin in r.json().get("Data", []):
-                            name = coin.get("CoinInfo", {}).get("Name")
-                            if name and name not in ["USDT", "USDC", "FDUSD", "DAI", "EUR", "BUSD"]:
-                                pairs_list.append(name)
-                    await asyncio.sleep(0.1)
-                pairs_list = list(dict.fromkeys(pairs_list))[:500]
-            except:
-                pairs_list = ["BTC", "ETH", "SOL"]
+            # Har cycle mein top 500 coins refresh honge
+            pairs_list = get_top_500_tickers()
 
             try:
                 await bot.send_message(
@@ -198,7 +182,7 @@ async def run_bot():
                     except Exception as e:
                         log.error(f"Telegram signal delivery error: {e}")
 
-                # Rate limiting se bachne ke liye thoda delay (Maha-Zaroori hai 500 coins ke liye)
+                # Rate limit bypass karne ke liye async delay (Yeh bilkul sahi hai yahan)
                 await asyncio.sleep(0.3)
 
             summary = (
