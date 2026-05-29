@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import os
-import time
 from datetime import datetime, timezone
 
 import requests
@@ -22,80 +21,64 @@ EMA_FAST = 9
 EMA_SLOW = 50
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("BinanceWeexFuturesBot")
+log = logging.getLogger("PureFuturesBot")
 
-# =========================================================================
-# FETCH ALL ACTIVE FUTURES COINS FROM BINANCE (PURE TRADING PAIRS)
-# =========================================================================
-def get_binance_futures_tickers():
+# ==========================================================
+# 1. FETCH ALL FUTURES COINS FROM BINANCE
+# ==========================================================
+def get_futures_tickers():
     try:
-        log.info("Fetching pure Futures coins from Binance API...")
+        log.info("Fetching active futures symbols...")
         url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+        r = requests.get(url, timeout=10)
         
-        r = requests.get(url, timeout=15)
         tickers = []
-        
         if r.status_code == 200:
             data = r.json()
             for market in data.get("symbols", []):
-                # Sirf USDS-M Perpetual (USDT pairs) aur TRADING status waale coins uthana
                 if market.get("quoteAsset") == "USDT" and market.get("status") == "TRADING":
-                    base_coin = market.get("baseAsset", "")
-                    # Fuzool stablecoins nikal dena
-                    if base_coin and base_coin not in ["USDT", "USDC", "DAI", "BUSD", "EUR"]:
-                        tickers.append(base_coin)
+                    symbol = market.get("symbol") # E.g., "BTCUSDT"
+                    base = market.get("baseAsset")
+                    if base not in ["USDT", "USDC", "DAI", "BUSD"]:
+                        tickers.append(symbol)
                         
         if not tickers:
-            return ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX"]
+            return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
             
-        clean_list = list(dict.fromkeys(tickers))
-        log.info(f"Successfully loaded {len(clean_list)} pure Futures coins.")
-        return clean_list
+        return list(dict.fromkeys(tickers))
     except Exception as e:
-        log.error(f"Error fetching from Binance Futures API: {e}")
-        return ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "SUI", "APT", "PEPE", "WIF"]
+        log.error(f"Error fetching tickers: {e}")
+        return ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
-# ==========================================
-# FETCH OHLCV (YAHOO FINANCE - NO BLOCK)
-# ==========================================
-def fetch_ohlcv(symbol):
-    pair = f"{symbol}-USD"
+# ==========================================================
+# 2. FETCH OHLCV DIRECTLY FROM BINANCE FUTURES (BULLETPROOF)
+# ==========================================================
+def fetch_futures_ohlcv(symbol):
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair}"
-        params = {
-            "region": "US", "lang": "en-US", "includePrePost": "false",
-            "interval": "15m", "useYF": "true", "range": "5d"
-        }
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        # 15m timeframe ke liye Binance Futures API se 100 candles mangwana
+        url = "https://fapi.binance.com/fapi/v1/klines"
+        params = {"symbol": symbol, "interval": "15m", "limit": "100"}
         
-        r = requests.get(url, params=params, headers=headers, timeout=10)
+        r = requests.get(url, params=params, timeout=10)
         if r.status_code != 200:
             return None
-
+            
         data = r.json()
-        result = data.get("chart", {}).get("result", [])
-        if not result:
-            return None
-
-        candles = result[0]
-        timestamps = candles.get("timestamp", [])
-        indicators = candles.get("indicators", {}).get("quote", [{}])[0]
-        
-        closes = indicators.get("close", [])
-        opens = indicators.get("open", [])
-        highs = indicators.get("high", [])
-        lows = indicators.get("low", [])
-
-        if not timestamps or len(closes) < EMA_SLOW:
-            return None
-
-        df = pd.DataFrame({
-            "ts": timestamps, "open": opens, "high": highs, "low": lows, "close": closes
-        }).dropna().reset_index(drop=True)
-        
-        if len(df) < EMA_SLOW:
+        if not data or len(data) < EMA_SLOW:
             return None
             
+        # Standard DataFrame banana
+        df = pd.DataFrame(data, columns=[
+            "ts", "open", "high", "low", "close", "volume", 
+            "close_time", "asset_volume", "trades", "taker_buy_base", "taker_buy_quote", "ignore"
+        ])
+        
+        # Numbers ko float mein convert karna
+        df["open"] = df["open"].astype(float)
+        df["high"] = df["high"].astype(float)
+        df["low"] = df["low"].astype(float)
+        df["close"] = df["close"].astype(float)
+        
         return df
     except Exception:
         return None
@@ -118,9 +101,7 @@ def calc_rsi(series, period=14):
 # ==========================================
 def detect_signal_details(df):
     close = df["close"]
-    if len(close) < EMA_SLOW + 15:
-        return None
-
+    
     ema9 = calc_ema(close, EMA_FAST)
     ema50 = calc_ema(close, EMA_SLOW)
     rsi_series = calc_rsi(close, 14)
@@ -128,6 +109,7 @@ def detect_signal_details(df):
     current_above = ema9.iloc[-1] > ema50.iloc[-1]
     previous_above = ema9.iloc[-2] > ema50.iloc[-2]
 
+    # Crossover Code
     if current_above == previous_above:
         return None
 
@@ -135,7 +117,7 @@ def detect_signal_details(df):
     entry_price = float(close.iloc[-1])
     current_rsi = float(rsi_series.iloc[-1])
 
-    # RSI Strategy Filters (Fake Breakout Protection)
+    # Strict RSI Filter Rules
     if signal_type == "LONG":
         if not (50.0 <= current_rsi <= 70.0):
             return None
@@ -143,7 +125,7 @@ def detect_signal_details(df):
         if not (30.0 <= current_rsi <= 50.0):
             return None
 
-    # Risk Management (Stop loss and Target settings)
+    # Risk Management Settings
     last_few_candles = df.tail(4)
     if signal_type == "LONG":
         stop_loss = float(last_few_candles["low"].min()) * 0.996
@@ -172,6 +154,7 @@ def detect_signal_details(df):
 # ==========================================
 def build_message(symbol, signal):
     now = datetime.now(timezone.utc).strftime("%d %b %Y %H:%M UTC")
+    clean_symbol = symbol.replace("USDT", "")
     
     def fmt(val):
         if val >= 100: return f"{val:.2f}"
@@ -181,15 +164,15 @@ def build_message(symbol, signal):
     emoji = "🟢" if signal["type"] == "LONG" else "🔴"
     
     return (
-        f"🚨 **CONFIRMED WEEX FUTURES SIGNAL** 🚨\n\n"
-        f"🪙 **Coin:** #{symbol}/USDT (Futures)\n"
+        f"🚨 **CONFIRMED FUTURES SIGNAL (9/50 EMA)** 🚨\n\n"
+        f"🪙 **Coin:** #{clean_symbol}/USDT\n"
         f"📈 **Direction:** {emoji} {signal['type']}\n"
         f"⏱ **Timeframe:** 15 Minute\n\n"
         f"📥 **Entry Price:** {fmt(signal['entry'])}\n"
         f"🎯 **Take Profit 1:** {fmt(signal['tp1'])}\n"
         f"🎯 **Take Profit 2:** {fmt(signal['tp2'])}\n"
         f"🛑 **Stop Loss:** {fmt(signal['sl'])}\n\n"
-        f"📊 **Filters Status:**\n"
+        f"📊 **Filters:**\n"
         f"✅ RSI (14) Confirmed: {signal['rsi']:.1f}\n\n"
         f"🕒 _Generated at: {now}_"
     )
@@ -205,19 +188,18 @@ async def run_bot():
         try:
             await bot.send_message(
                 chat_id=CHAT_ID,
-                text="🤖 WEEX Verified Futures Bot Online!\n⚡ Monitoring 300+ pure Futures coins with 9/50 EMA + RSI Filters.",
+                text="🤖 WEEX/Binance Full-Scale Futures Bot Online!\n⚡ 9/50 EMA + RSI Filters Active on 100% of Altcoins.",
             )
         except Exception as e:
-            log.error(f"Telegram start message failed: {e}")
+            log.error(f"Telegram connection error: {e}")
 
         while True:
-            # Load active futures pairs from Binance source
-            pairs_list = get_binance_futures_tickers()
+            pairs_list = get_futures_tickers()
 
             try:
                 await bot.send_message(
                     chat_id=CHAT_ID,
-                    text=f"📊 Futures Tickers Synchronized!\n🔍 Scanning {len(pairs_list)} High-Volume Trading Pairs (15m)...",
+                    text=f"🔄 Full Futures Market Loaded!\n🔍 Scanning {len(pairs_list)} Coins via Native Backend...",
                 )
             except:
                 pass
@@ -227,7 +209,7 @@ async def run_bot():
             found = 0
 
             for symbol in pairs_list:
-                df = fetch_ohlcv(symbol)
+                df = fetch_futures_ohlcv(symbol)
                 if df is None:
                     skipped += 1
                     continue
@@ -244,22 +226,22 @@ async def run_bot():
                             parse_mode="Markdown"
                         )
                     except Exception as e:
-                        log.error(f"Telegram signal delivery error: {e}")
+                        log.error(f"Telegram send fail: {e}")
 
-                # Safe rate limiting delay
-                await asyncio.sleep(0.2)
+                # Chota delay taaki smooth scanning ho
+                await asyncio.sleep(0.05)
 
             summary = (
                 f"📡 **Scan Complete**\n\n"
-                f"🔍 Total Scanned: {scanned} Real Coins\n"
-                f"✅ Safe Signals Delivered: {found}\n"
-                f"⏭ Skipped: {skipped}\n"
-                f"⏱ Next loop in 15 minutes"
+                f"🔍 Total Scanned: {scanned} coins\n"
+                f"✅ Safe Signals Found: {found}\n"
+                f"⏭ Skipped/Invalid: {skipped}\n"
+                f"⏱ Next massive scan in 15 minutes"
             )
             try:
                 await bot.send_message(chat_id=CHAT_ID, text=summary, parse_mode="Markdown")
             except Exception as e:
-                log.error(f"Summary delivery error: {e}")
+                log.error(f"Summary send fail: {e}")
                 
             await asyncio.sleep(INTERVAL_MINUTES * 60)
 
