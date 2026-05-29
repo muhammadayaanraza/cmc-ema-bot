@@ -1,0 +1,33 @@
+# ── Sensitive files — KABHI bhi GitHub par upload mat karo ──
+config.env
+.env
+*.env
+bot_state.json
+
+# ── Python cache ──
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ── Virtual environment ──
+venv/
+env/
+.venv/
+ENV/
+
+# ── Logs ──
+*.log
+logs/
+
+# ── OS files ──
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE files ──
+.vscode/
+.idea/
+*.swp
+*.swo
