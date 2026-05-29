@@ -21,7 +21,7 @@ EMA_FAST = 20
 EMA_SLOW = 200
 CANDLE_LIMIT = 250
 
-BYBIT_BASE = "https://api.bybit.net"
+BYBIT_BASE = "https://api.bytick.com"
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("EMABot")
