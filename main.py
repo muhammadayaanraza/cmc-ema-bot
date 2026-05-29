@@ -36,7 +36,6 @@ def get_futures_tickers():
         if r.status_code == 200:
             data = r.json()
             for market in data.get("symbols", []):
-                # Sirf USDT pairs aur TRADING status waale coins active futures hain
                 if market.get("quoteAsset") == "USDT" and market.get("status") == "TRADING":
                     symbol = market.get("symbol")  # E.g., "BTCUSDT"
                     if symbol and not any(x in symbol for x in ["USDCUSDT", "BUSDUSDT", "EURUSDT"]):
@@ -45,7 +44,6 @@ def get_futures_tickers():
         if not tickers:
             return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
             
-        # Clean duplicates just in case
         final_list = list(dict.fromkeys(tickers))
         log.info(f"Loaded {len(final_list)} pure futures pairs.")
         return final_list
@@ -168,8 +166,8 @@ def build_message(symbol, signal):
         f"📈 **Direction:** {emoji} {signal['type']}\n"
         f"⏱ **Timeframe:** 15 Minute\n\n"
         f"📥 **Entry Price:** {fmt(signal['entry'])}\n"
-        f"🎯 **Take Profit 1:** {fmt(fmt(signal['tp1']))}\n"
-        f"🎯 **Take Profit 2:** {fmt(fmt(signal['tp2']))}\n"
+        f"🎯 **Take Profit 1:** {fmt(signal['tp1'])}\n"
+        f"🎯 **Take Profit 2:** {fmt(signal['tp2'])}\n"
         f"🛑 **Stop Loss:** {fmt(signal['sl'])}\n\n"
         f"📊 **Filters:**\n"
         f"✅ RSI (14) Confirmed: {signal['rsi']:.1f}\n\n"
@@ -193,7 +191,6 @@ async def run_bot():
             log.error(f"Telegram connection error: {e}")
 
         while True:
-            # Load active futures pairs directly from list
             pairs_list = get_futures_tickers()
 
             try:
@@ -228,7 +225,7 @@ async def run_bot():
                     except Exception as e:
                         log.error(f"Telegram send fail: {e}")
 
-                # Rate limiting delay
+                # Rate limiting safety delay
                 await asyncio.sleep(0.05)
 
             summary = (
