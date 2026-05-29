@@ -22,58 +22,48 @@ EMA_FAST = 9
 EMA_SLOW = 50
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("TradingViewWeexBot")
+log = logging.getLogger("GlobalCryptoBot")
 
 # =========================================================================
-# FETCH ALL FUTURES COINS DIRECTLY FROM TRADINGVIEW CRYPTO SCANNER BACKEND
+# FETCH TOP 500 COINS DYNAMICALLY FROM COINGECKO (BULLETPROOF LIST)
 # =========================================================================
-def get_tradingview_futures_tickers():
+def get_global_futures_tickers():
     try:
-        log.info("Fetching all active Futures coins from TradingView Scanner...")
-        url = "https://scanner.tradingview.com/crypto/scan"
-        
-        # TradingView Scanner API Payload (Filters for USDT Perpetual Futures)
-        payload = {
-            "filter": [
-                {"left": "typespecs", "operation": "in_range", "right": ["perpetual"]},
-                {"left": "name", "operation": "match", "right": "USDT$"}
-            ],
-            "options": {"lang": "en"},
-            "markets": ["crypto"],
-            "symbols": {"query": {"types": []}, "tickers": []},
-            "columns": ["base_currency"],
-            "sort": {"sortBy": "crypto_total_shares_value", "sortOrder": "desc"},
-            "range": [0, 650] # Top 650 Futures Coins tak scan karega (WEEX/MEXC/Binance ka nichor)
-        }
-        
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        r = requests.post(url, json=payload, headers=headers, timeout=20)
-        
+        log.info("Fetching Top 500 Coins from CoinGecko directory...")
+        # Page 1 aur Page 2 se 250-250 coins uthayenge = Total 500
         tickers = []
-        if r.status_code == 200:
-            data = r.json()
-            for item in data.get("data", []):
-                # TradingView returns format like: "BINANCE:BTCUSDT.P" or "MEXC:SOLUSDT"
-                d_sym = item.get("d", "")
-                base_coin = item.get("s", "").split(":")[-1].replace("USDT", "").replace(".P", "").replace("PERP", "")
-                
-                if base_coin and base_coin not in ["USDT", "USDC", "DAI", "EUR", "BUSD"]:
-                    tickers.append(base_coin)
-                    
-        if not tickers:
-            return ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX"]
+        
+        for page in [1, 2]:
+            url = f"https://api.coingecko.com/api/v3/coins/markets"
+            params = {
+                "vs_currency": "usd",
+                "order": "market_cap_desc",
+                "per_page": "250",
+                "page": str(page),
+                "sparkline": "false"
+            }
+            r = requests.get(url, params=params, timeout=15)
+            if r.status_code == 200:
+                data = r.json()
+                for coin in data:
+                    sym = coin.get("symbol", "").upper()
+                    # Stablecoins aur fiat pairs ko filter out karna
+                    if sym and sym not in ["USDT", "USDC", "FDUSD", "DAI", "EUR", "GBP", "BUSD", "PYUSD", "WBTC", "STETH"]:
+                        tickers.append(sym)
+            time.sleep(0.2) # Safe bypass
             
-        # Deduplicate list
+        if not tickers:
+            return ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "DOT", "LINK"]
+            
         clean_list = list(dict.fromkeys(tickers))
-        log.info(f"Successfully loaded {len(clean_list)} pure Futures coins from TradingView.")
+        log.info(f"Successfully loaded {len(clean_list)} coins for scanning.")
         return clean_list
     except Exception as e:
-        log.error(f"Error fetching from TradingView backend: {e}")
-        # Fallback list if API fails
+        log.error(f"Error fetching from CoinGecko: {e}")
         return ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "SUI", "APT", "PEPE", "WIF"]
 
 # ==========================================
-# FETCH OHLCV (YAHOO FINANCE - NO BLOCK ROUTE)
+# FETCH OHLCV (YAHOO FINANCE)
 # ==========================================
 def fetch_ohlcv(symbol):
     pair = f"{symbol}-USD"
@@ -131,7 +121,7 @@ def calc_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 # ==========================================
-# SIGNAL DETECTION WITH STRICT RSI FILTERS
+# SIGNAL DETECTION WITH RSI FILTERS
 # ==========================================
 def detect_signal_details(df):
     close = df["close"]
@@ -145,7 +135,6 @@ def detect_signal_details(df):
     current_above = ema9.iloc[-1] > ema50.iloc[-1]
     previous_above = ema9.iloc[-2] > ema50.iloc[-2]
 
-    # Crossover check
     if current_above == previous_above:
         return None
 
@@ -153,17 +142,15 @@ def detect_signal_details(df):
     entry_price = float(close.iloc[-1])
     current_rsi = float(rsi_series.iloc[-1])
 
-    # 🛑 USER RSI STRATEGY FILTERS (Fake Breakout Protection)
+    # RSI Filters
     if signal_type == "LONG":
-        # RSI 50 se upar hona chahiye aur 70 se niche (Overbought se bachne ke liye)
         if not (50.0 <= current_rsi <= 70.0):
             return None
     else:
-        # SHORT ke liye RSI 50 se niche hona chahiye aur 30 se upar (Oversold se bachne ke liye)
         if not (30.0 <= current_rsi <= 50.0):
             return None
 
-    # Risk Management Calculation (Tight Swing Based)
+    # Risk Management
     last_few_candles = df.tail(4)
     if signal_type == "LONG":
         stop_loss = float(last_few_candles["low"].min()) * 0.996
@@ -202,16 +189,15 @@ def build_message(symbol, signal):
     
     return (
         f"🚨 **CONFIRMED FUTURES SIGNAL (9/50 EMA)** 🚨\n\n"
-        f"🪙 **Coin:** #{symbol}/USDT (Futures)\n"
+        f"🪙 **Coin:** #{symbol}/USDT\n"
         f"📈 **Direction:** {emoji} {signal['type']}\n"
         f"⏱ **Timeframe:** 15 Minute\n\n"
         f"📥 **Entry Price:** {fmt(signal['entry'])}\n"
         f"🎯 **Take Profit 1:** {fmt(signal['tp1'])}\n"
         f"🎯 **Take Profit 2:** {fmt(signal['tp2'])}\n"
         f"🛑 **Stop Loss:** {fmt(signal['sl'])}\n\n"
-        f"📊 **Filter Status:**\n"
-        f"✅ RSI (14) Validated: {signal['rsi']:.1f}\n\n"
-        f"💼 _Exchanges: WEEX / MEXC / Binance Futures_\n"
+        f"📊 **Filters:**\n"
+        f"✅ RSI (14) Confirmed: {signal['rsi']:.1f}\n\n"
         f"🕒 _Generated at: {now}_"
     )
 
@@ -226,19 +212,18 @@ async def run_bot():
         try:
             await bot.send_message(
                 chat_id=CHAT_ID,
-                text="🤖 TradingView Futures Bot Online!\n⚡ 9/50 EMA Strategy with Smart RSI Filters Activated.",
+                text="🤖 WEEX Global Multi-Coin Bot Online!\n⚡ 9/50 EMA Strategy with strict RSI filters running.",
             )
         except Exception as e:
             log.error(f"Telegram start message failed: {e}")
 
         while True:
-            # Load coins dynamically using TradingView backend scanner
-            pairs_list = get_tradingview_futures_tickers()
+            pairs_list = get_global_futures_tickers()
 
             try:
                 await bot.send_message(
                     chat_id=CHAT_ID,
-                    text=f"📊 TradingView Scanner Loaded!\n🔍 Scanning {len(pairs_list)} Global Futures Pairs (15m)...",
+                    text=f"📊 Market List Loaded!\n🔍 Scanning {len(pairs_list)} High-Volume Coins (15m)...",
                 )
             except:
                 pass
@@ -267,14 +252,14 @@ async def run_bot():
                     except Exception as e:
                         log.error(f"Telegram signal delivery error: {e}")
 
-                # Safe scanning delay
+                # Rate limiting sleep
                 await asyncio.sleep(0.2)
 
             summary = (
-                f"📡 **Global Scan Complete**\n\n"
+                f"📡 **Scan Complete**\n\n"
                 f"🔍 Total Scanned: {scanned} coins\n"
-                f"✅ Verified High-Confidence Signals: {found}\n"
-                f"⏭ Skipped/No Volume: {skipped}\n"
+                f"✅ Verified RSI/EMA Signals: {found}\n"
+                f"⏭ Skipped/Low Volume: {skipped}\n"
                 f"⏱ Next massive scan in 15 minutes"
             )
             try:
