@@ -21,63 +21,54 @@ EMA_FAST = 20
 EMA_SLOW = 200
 CANDLE_LIMIT = 250
 
-BYBIT_BASE = "https://api.bytick.com"
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json",
-    "Content-Type": "application/json"
-}
+# Data Fetching ke liye Binance use karenge kyunki yeh Railway ko block nahi karta
+BINANCE_BASE = "https://api.binance.com"
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("EMABot")
 
 # ==========================================
-# MANUAL COINS LIST (BYBIT BLOCK BYPASS)
+# MANUAL COINS LIST
 # ==========================================
-# Agar Bybit API block bhi ho jaye, bot yahan se coins utha kar smoothly scan karega
 MANUAL_PAIRS = [
     "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "DOT", "MATIC",
     "LINK", "UNI", "LTC", "ATOM", "TRX", "BCH", "NEAR", "FIL", "APT", "ARB",
-    "OP", "INJ", "SUI", "TIA", "SEI", "ORDI", "1000PEPE", "1000BONK", "SHIB", "FLOKI",
-    "GALA", "FTM", "RUNE", "IMX", "GRT", "LDO", "STX", "ICP", "FET", "AGIX"
+    "OP", "INJ", "SUI", "TIA", "SEI", "ORDI", "SHIB", "GALA", "FTM", "RUNE", 
+    "IMX", "GRT", "LDO", "STX", "ICP", "FET"
 ]
 
 # ==========================================
-# FETCH OHLCV
+# FETCH OHLCV (NOW USING BINANCE)
 # ==========================================
 def fetch_ohlcv(symbol):
     pair = f"{symbol}USDT"
     try:
+        # Binance Kline API endpoint
         r = requests.get(
-            f"{BYBIT_BASE}/v5/market/kline",
+            f"{BINANCE_BASE}/api/v3/klines",
             params={
-                "category": "linear",
                 "symbol": pair,
-                "interval": "15",
+                "interval": "15m",
                 "limit": str(CANDLE_LIMIT),
             },
-            headers=HEADERS,
-            timeout=20,
+            timeout=15,
         )
         
         if r.status_code != 200:
+            log.error(f"Binance error for {pair}: Status {r.status_code}")
             return None
 
-        data = r.json()
-
-        if data.get("retCode") != 0:
-            return None
-
-        raw = data.get("result", {}).get("list", [])
+        raw = r.json()
         if not raw or len(raw) < EMA_SLOW:
             return None
 
-        raw.reverse() 
-
+        # Binance format ko DataFrame mein convert kar rahe hain
         df = pd.DataFrame(
             raw,
-            columns=["ts", "open", "high", "low", "close", "volume", "turnover"]
+            columns=[
+                "ts", "open", "high", "low", "close", "volume", 
+                "close_time", "asset_volume", "trades", "taker_base", "taker_quote", "ignore"
+            ]
         )
 
         for col in ["open", "high", "low", "close"]:
@@ -86,7 +77,7 @@ def fetch_ohlcv(symbol):
         return df
 
     except Exception as e:
-        log.error(f"{pair} error: {e}")
+        log.error(f"{pair} fetch error: {e}")
         return None
 
 # ==========================================
@@ -134,7 +125,7 @@ async def run_bot():
         try:
             await bot.send_message(
                 chat_id=CHAT_ID,
-                text=f"🤖 Bot Started Successfully on Railway!\n📊 Scanning {len(MANUAL_PAIRS)} Top Coins every 15 minutes.",
+                text=f"🤖 Bot Started Successfully!\n📊 Scanning {len(MANUAL_PAIRS)} Top Coins via Binance Data.",
             )
         except Exception as e:
             log.error(f"Telegram start message failed: {e}")
@@ -163,7 +154,6 @@ async def run_bot():
                     except Exception as e:
                         log.error(f"Telegram signal delivery error: {e}")
 
-                # Chota sa delay taaki Bybit ban na kare
                 await asyncio.sleep(0.2)
 
             summary = (
