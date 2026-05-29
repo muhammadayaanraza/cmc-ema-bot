@@ -23,7 +23,7 @@ EMA_SLOW = 200
 CANDLE_LIMIT = 250
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("HighConfBot")
+log = logging.getLogger("EMABotWithRSI")
 
 # ==========================================
 # AUTOMATIC TOP 300 COINS FETCH
@@ -55,7 +55,7 @@ def get_top_300_tickers():
         return ["BTC", "ETH", "SOL"]
 
 # ==========================================
-# FETCH OHLCV WITH VOLUME DATA
+# FETCH OHLCV
 # ==========================================
 def fetch_ohlcv(symbol):
     pair = f"{symbol}-USD"
@@ -84,13 +84,12 @@ def fetch_ohlcv(symbol):
         opens = indicators.get("open", [])
         highs = indicators.get("high", [])
         lows = indicators.get("low", [])
-        volumes = indicators.get("volume", [])
 
         if not timestamps or len(closes) < EMA_SLOW:
             return None
 
         df = pd.DataFrame({
-            "ts": timestamps, "open": opens, "high": highs, "low": lows, "close": closes, "volume": volumes
+            "ts": timestamps, "open": opens, "high": highs, "low": lows, "close": closes
         }).dropna().reset_index(drop=True)
         
         if len(df) < EMA_SLOW:
@@ -101,7 +100,7 @@ def fetch_ohlcv(symbol):
         return None
 
 # ==========================================
-# TECHNICAL INDICATORS CALCULATIONS
+# INDICATORS CALCULATIONS
 # ==========================================
 def calc_ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
@@ -114,58 +113,37 @@ def calc_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 # ==========================================
-# HIGH CONFIDENCE SIGNAL DETECTION WITH FILTERS
+# SIGNAL DETECTION WITH RSI INFO (NO BLOCK FILTER)
 # ==========================================
-def detect_high_confidence_signal(df):
+def detect_signal_details(df):
     close = df["close"]
-    volume = df["volume"]
-    
     if len(close) < EMA_SLOW + 15:
         return None
 
-    # Indicators calculate karna
     ema20 = calc_ema(close, EMA_FAST)
     ema200 = calc_ema(close, EMA_SLOW)
-    rsi = calc_rsi(close, 14)
+    rsi_series = calc_rsi(close, 14)
 
     current_above = ema20.iloc[-1] > ema200.iloc[-1]
     previous_above = ema20.iloc[-2] > ema200.iloc[-2]
 
-    # Rule 1: Crossover hona zaroori hai
     if current_above == previous_above:
         return None
 
-    # Rule 2: HIGH VOLUME FILTER (Current volume pichle 20 candles ke average volume se kam se kam 1.5x zyada ho)
-    avg_volume = volume.iloc[-21:-1].mean()
-    if volume.iloc[-1] < (avg_volume * 1.5):
-        return None # Volume low hai toh skip
-
-    # Rule 3: EMA GAP FILTER (Fakeout se bachne ke liye dono lines mein kam se kam 0.25% ka gap ho)
-    price_gap_pct = abs(ema20.iloc[-1] - ema200.iloc[-1]) / ema200.iloc[-1] * 100
-    if price_gap_pct < 0.25:
-        return None # Gap kam hai toh skip
-
     signal_type = "LONG" if current_above else "SHORT"
-    current_rsi = rsi.iloc[-1]
-
-    # Rule 4: RSI MOMENTUM FILTER
-    if signal_type == "LONG" and (current_rsi < 50 or current_rsi > 70):
-        return None # RSI perfect zone mein nahi hai
-    if signal_type == "SHORT" and (current_rsi > 50 or current_rsi < 30):
-        return None
-
-    # Agar saari conditions pass ho jayein, tabhi trade generate hogi
     entry_price = float(close.iloc[-1])
+    current_rsi = float(rsi_series.iloc[-1])
+
     last_few_candles = df.tail(5)
     
     if signal_type == "LONG":
-        stop_loss = float(last_few_candles["low"].min()) * 0.996
+        stop_loss = float(last_few_candles["low"].min()) * 0.995 
         risk = entry_price - stop_loss
         if risk <= 0: risk = entry_price * 0.01
         take_profit1 = entry_price + (risk * 1.5)
         take_profit2 = entry_price + (risk * 2.5)
     else:
-        stop_loss = float(last_few_candles["high"].max()) * 1.004
+        stop_loss = float(last_few_candles["high"].max()) * 1.005
         risk = stop_loss - entry_price
         if risk <= 0: risk = entry_price * 0.01
         take_profit1 = entry_price - (risk * 1.5)
@@ -177,8 +155,7 @@ def detect_high_confidence_signal(df):
         "sl": stop_loss,
         "tp1": take_profit1,
         "tp2": take_profit2,
-        "rsi": current_rsi,
-        "gap": price_gap_pct
+        "rsi": current_rsi
     }
 
 # ==========================================
@@ -192,22 +169,20 @@ def build_message(symbol, signal):
         if val >= 1: return f"{val:.4f}"
         return f"{val:.6f}"
 
-    emoji = "🔥 LONG (Strong Bullish Breakout) 🟢" if signal["type"] == "LONG" else "💥 SHORT (Strong Bearish Breakdown) 🔴"
+    emoji = "🟢" if signal["type"] == "LONG" else "🔴"
     
     return (
-        f"🌟 **HIGH CONFIDENCE SIGNAL** 🌟\n\n"
+        f"🚨 **NEW TRADING SIGNAL** 🚨\n\n"
         f"🪙 **Coin:** #{symbol}/USDT\n"
-        f"📈 **Setup:** {emoji}\n"
+        f"📈 **Direction:** {emoji} {signal['type']}\n"
         f"⏱ **Timeframe:** 15 Minute\n\n"
         f"📥 **Entry Price:** {fmt(signal['entry'])}\n"
         f"🎯 **Take Profit 1:** {fmt(signal['tp1'])}\n"
         f"🎯 **Take Profit 2:** {fmt(signal['tp2'])}\n"
         f"🛑 **Stop Loss:** {fmt(signal['sl'])}\n\n"
-        f"📊 **Metrics for Confidence:**\n"
-        f"🔹 RSI: {signal['rsi']:.1f}\n"
-        f"🔹 EMA Separation Gap: {signal['gap']:.2f}%\n"
-        f"⚡ _Volume Spike: Confirmed (High)_ \n\n"
-        f"🕒 _Time: {now}_"
+        f"📊 **Extra Info:**\n"
+        f"ℹ️ RSI (14): {signal['rsi']:.1f}\n\n"
+        f"🕒 _Generated at: {now}_"
     )
 
 # ==========================================
@@ -221,7 +196,7 @@ async def run_bot():
         try:
             await bot.send_message(
                 chat_id=CHAT_ID,
-                text="🤖 High-Confidence Bot Online!\n🔍 Filtering Top 300 Coins for High Volume & RSI Confirmation...",
+                text="🤖 Bot Online (EMA Crossover + RSI Info Ready!)...",
             )
         except Exception as e:
             log.error(f"Telegram start message failed: {e}")
@@ -232,7 +207,7 @@ async def run_bot():
             try:
                 await bot.send_message(
                     chat_id=CHAT_ID,
-                    text=f"📊 Top 300 List Loaded!\n⚡ Scanning for High Volume + RSI Breakouts.",
+                    text=f"📊 Top 300 List Loaded!\n🔍 Scanning Charts...",
                 )
             except:
                 pass
@@ -248,7 +223,7 @@ async def run_bot():
                     continue
 
                 scanned += 1
-                signal = detect_high_confidence_signal(df)
+                signal = detect_signal_details(df)
 
                 if signal:
                     found += 1
@@ -264,11 +239,11 @@ async def run_bot():
                 await asyncio.sleep(0.3)
 
             summary = (
-                f"📡 **Filter Scan Complete**\n\n"
-                f"🔍 Total Analyzed: {scanned} coins\n"
-                f"🔥 High-Conf Signals: {found}\n"
-                f"⏭ Filtered Out/No Data: {skipped}\n"
-                f"⏱ Next premium scan in 15 minutes"
+                f"📡 **Scan Complete**\n\n"
+                f"🔍 Scanned: {scanned} coins\n"
+                f"✅ Signals Found: {found}\n"
+                f"⏭ Skipped: {skipped}\n"
+                f"⏱ Next scan in 15 minutes"
             )
             try:
                 await bot.send_message(chat_id=CHAT_ID, text=summary, parse_mode="Markdown")
