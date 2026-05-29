@@ -63,8 +63,8 @@ CMC_API_KEY = os.getenv("CMC_API_KEY", "APNI_CMC_API_KEY_YAHAN")  # coinmarketca
 
 # --- Bot Settings ---
 INTERVAL_MINUTES  = 15      # Har kitne minute baad scan karna hai
-TOP_N_COINS       = 100     # CMC se top kitne coins lene hain (max free: 200)
-MIN_VOLUME_USD    = 5_000_000  # Min 24h volume filter ($5M)
+TOP_N_COINS       = 200     # CMC se top kitne coins lene hain (max free: 200)
+MIN_VOLUME_USD    = 1_000_000  # Min 24h volume filter ($1M)
 EMA_FAST          = 20
 EMA_SLOW          = 200
 ATR_PERIOD        = 14
@@ -115,7 +115,6 @@ def fetch_top_coins(limit: int = TOP_N_COINS) -> list[str]:
         "start": 1,
         "limit": limit,
         "sort": "market_cap",
-        "cryptocurrency_type": "coins",
         "convert": "USD",
     }
     try:
